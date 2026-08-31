@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: as2expert-desktop
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: as2expert-desktop-linux-x86_64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: as2expert-desktop-windows-x86_64.zip
+          - os: macos-14
+            target: universal-apple-darwin
+            asset: as2expert-desktop-macos-universal.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux GUI dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev pkg-config
+
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo build --release --target x86_64-unknown-linux-gnu
+          tar -C target/x86_64-unknown-linux-gnu/release -czf "${{ matrix.asset }}" "$BIN"
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc
+          7z a "${{ matrix.asset }}" "./target/x86_64-pc-windows-msvc/release/$BIN.exe"
+
+      - name: Build (macOS universal)
+        if: matrix.os == 'macos-14'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          mkdir -p dist
+          lipo -create -output "dist/$BIN" \
+            "target/x86_64-apple-darwin/release/$BIN" \
+            "target/aarch64-apple-darwin/release/$BIN"
+          tar -C dist -czf "${{ matrix.asset }}" "$BIN"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
