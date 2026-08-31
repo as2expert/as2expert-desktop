@@ -47,12 +47,31 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-gnu
           tar -C target/x86_64-unknown-linux-gnu/release -czf "${{ matrix.asset }}" "$BIN"
 
-      - name: Build (Windows)
+      - name: Build + package (Windows, with software-GL for RDP)
         if: matrix.os == 'windows-latest'
-        shell: bash
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cargo build --release --target x86_64-pc-windows-msvc
-          7z a "${{ matrix.asset }}" "./target/x86_64-pc-windows-msvc/release/$BIN.exe"
+          New-Item -ItemType Directory -Force -Path pkg/mesa | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/$env:BIN.exe" pkg/
+          # Bundle Mesa's llvmpipe software OpenGL so remote-desktop (RDP) users
+          # get a working renderer. The app loads it only when a remote session
+          # is detected; local users keep hardware acceleration.
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "as2expert-ci" }
+          $releases = Invoke-RestMethod -Headers $headers "https://api.github.com/repos/pal1000/mesa-dist-win/releases?per_page=15"
+          $asset = $releases.assets `
+            | Where-Object { $_.name -like "*release-msvc.7z" } | Select-Object -First 1
+          if (-not $asset) {
+            $asset = ($releases | ForEach-Object { $_.assets } `
+              | Where-Object { $_.name -like "*release-msvc.7z" } | Select-Object -First 1)
+          }
+          Write-Host "Mesa asset: $($asset.name)"
+          Invoke-WebRequest -Headers $headers $asset.browser_download_url -OutFile mesa.7z
+          7z x mesa.7z -omesa_x -y | Out-Null
+          Copy-Item mesa_x/x64/*.dll pkg/mesa/
+          7z a "${{ matrix.asset }}" ./pkg/*
 
       - name: Build (macOS universal)
         if: matrix.os == 'macos-14'

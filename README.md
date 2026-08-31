@@ -66,6 +66,21 @@ Support/as2expert` on macOS, `~/.config/as2expert` on Linux). The token is
 written **only** when *Remember token* is enabled, and in plain text — leave it
 off on shared machines.
 
+## Remote desktop (RDP / VNC / VDI)
+
+Remote sessions typically expose only OpenGL 1.1, which is too old for the GPU
+renderer. The app detects a remote session and automatically switches to a
+**software renderer** — local sessions keep hardware acceleration.
+
+- **Windows (RDP):** the release ships Mesa's `llvmpipe` software OpenGL in a
+  `mesa/` folder next to the executable; it is loaded only inside an RDP session.
+  Keep the `mesa/` folder alongside `as2expert-desktop.exe`.
+- **Linux (VNC/SSH-forwarded):** software rendering is enabled automatically for
+  SSH sessions; otherwise the app retries in software if the GPU context fails.
+
+You can force software rendering anywhere by setting `AS2EXPERT_SOFTWARE_GL=1`
+before launching.
+
 ## Dependencies
 
 Kept deliberately small for a GUI: `eframe`/`egui` (glow backend, no wgpu, no
