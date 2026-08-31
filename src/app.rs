@@ -28,10 +28,12 @@ const MUTED: Color32 = Color32::from_rgb(0x6B, 0x72, 0x80);
 const DANGER: Color32 = Color32::from_rgb(0xC4, 0x3B, 0x3B);
 const OK_GREEN: Color32 = Color32::from_rgb(0x1E, 0x8E, 0x3E);
 
-/// A folder derived from the loaded messages.
+/// A folder in a station (from the `/messages/folders` endpoint, or derived from
+/// the loaded messages as a fallback).
 struct Folder {
     id: i64,
     name: String,
+    parent: Option<i64>,
     count: usize,
 }
 
@@ -46,6 +48,7 @@ enum SortKey {
 /// Results delivered from background API tasks to the UI thread.
 enum Event {
     Stations(as2expert::Result<Vec<Value>>),
+    Folders(as2expert::Result<Vec<Value>>),
     Messages(as2expert::Result<Vec<Value>>),
     Opened(as2expert::Result<Value>),
     Body(as2expert::Result<Vec<u8>>),
@@ -201,11 +204,29 @@ impl App {
         if let Some(sid) = self.selected_station {
             body["station"] = json!(sid);
         }
+        if let Some(fid) = self.selected_folder {
+            body["folder"] = json!(fid);
+        }
         self.inflight += 1;
         self.status = "Loading messages…".into();
         self.rt.spawn(async move {
             let r = c.messages.list(body).await;
             let _ = tx.send(Event::Messages(r));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Load the folder tree for the selected station (or the whole site).
+    fn load_folders(&mut self) {
+        let Some(c) = self.client.clone() else { return };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let mut body = json!({});
+        if let Some(sid) = self.selected_station {
+            body["station"] = json!(sid);
+        }
+        self.rt.spawn(async move {
+            let r = c.messages.folders(body).await;
+            let _ = tx.send(Event::Folders(r));
             ctx.request_repaint();
         });
     }
@@ -356,7 +377,8 @@ impl App {
         self.status.clear();
     }
 
-    /// Rebuild the folder list from the currently loaded messages.
+    /// Fallback: rebuild the folder list from the loaded messages when the
+    /// `/messages/folders` endpoint is unavailable (older nodes).
     fn derive_folders(&mut self) {
         let mut folders: Vec<Folder> = Vec::new();
         for m in &self.messages {
@@ -374,17 +396,48 @@ impl App {
                     } else {
                         name
                     },
+                    parent: None,
                     count: 1,
                 });
             }
         }
         folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.set_folders(folders);
+    }
+
+    fn set_folders(&mut self, folders: Vec<Folder>) {
         if let Some(sel) = self.selected_folder {
             if !folders.iter().any(|f| f.id == sel) {
                 self.selected_folder = None;
             }
         }
         self.folders = folders;
+    }
+
+    /// Depth-first display order of the folder tree: (folder index, depth).
+    fn folder_order(&self) -> Vec<(usize, u8)> {
+        let mut out = Vec::new();
+        self.push_children(None, 0, &mut out);
+        // Any orphans (parent not in the set) are shown at the root.
+        for (i, f) in self.folders.iter().enumerate() {
+            if !out.iter().any(|(j, _)| *j == i)
+                && f.parent
+                    .map(|p| !self.folders.iter().any(|g| g.id == p))
+                    .unwrap_or(false)
+            {
+                out.push((i, 0));
+            }
+        }
+        out
+    }
+
+    fn push_children(&self, parent: Option<i64>, depth: u8, out: &mut Vec<(usize, u8)>) {
+        for (i, f) in self.folders.iter().enumerate() {
+            if f.parent == parent {
+                out.push((i, depth));
+                self.push_children(Some(f.id), depth + 1, out);
+            }
+        }
     }
 
     /// Indices of the messages to show, filtered by folder + search and sorted.
@@ -395,11 +448,6 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, m)| {
-                if let Some(fid) = self.selected_folder {
-                    if m.get("folder_id").and_then(|v| v.as_i64()) != Some(fid) {
-                        return false;
-                    }
-                }
                 if needle.is_empty() {
                     return true;
                 }
@@ -461,6 +509,7 @@ impl App {
                                 self.screen = Screen::Main;
                                 let _ = self.config.save();
                                 self.status = "Connected.".into();
+                                self.load_folders();
                                 self.refresh_messages();
                             }
                         }
@@ -472,13 +521,24 @@ impl App {
                         }
                     }
                 }
+                Event::Folders(r) => match r {
+                    Ok(v) if !v.is_empty() => {
+                        let folders = v.iter().map(folder_from).collect();
+                        self.set_folders(folders);
+                    }
+                    // No endpoint (older node) or no folders → fall back to
+                    // whatever the loaded messages reveal.
+                    _ => self.derive_folders(),
+                },
                 Event::Messages(r) => {
                     self.inflight = self.inflight.saturating_sub(1);
                     match r {
                         Ok(v) => {
                             self.status = format!("{} messages", v.len());
                             self.messages = v;
-                            self.derive_folders();
+                            if self.folders.is_empty() {
+                                self.derive_folders();
+                            }
                             self.selected = None;
                             self.opened = None;
                             self.body_text = None;
@@ -748,6 +808,7 @@ impl App {
                     if let Some(sel) = change {
                         self.selected_station = sel;
                         self.selected_folder = None;
+                        self.load_folders();
                         self.refresh_messages();
                     }
 
@@ -833,23 +894,27 @@ impl App {
                 });
                 ui.add_space(6.0);
 
-                let total: usize = self.messages.len();
+                let all_count: usize = self.folders.iter().map(|f| f.count).sum();
                 let mut change: Option<Option<i64>> = None;
                 if tree_row(
                     ui,
                     Icon::Inbox,
                     "All messages",
-                    Some(total),
+                    Some(all_count),
+                    0,
                     self.selected_folder.is_none(),
                 )
                 .clicked()
                 {
                     change = Some(None);
                 }
+                let order = self.folder_order();
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    for f in &self.folders {
+                    for (i, depth) in order {
+                        let f = &self.folders[i];
                         let sel = self.selected_folder == Some(f.id);
-                        if tree_row(ui, Icon::Folder, &f.name, Some(f.count), sel).clicked() {
+                        if tree_row(ui, Icon::Folder, &f.name, Some(f.count), depth, sel).clicked()
+                        {
                             change = Some(Some(f.id));
                         }
                     }
@@ -862,6 +927,7 @@ impl App {
                     self.selected_folder = sel;
                     self.selected = None;
                     self.opened = None;
+                    self.refresh_messages();
                 }
             });
     }
@@ -1246,6 +1312,7 @@ fn tree_row(
     icon: Icon,
     name: &str,
     count: Option<usize>,
+    depth: u8,
     selected: bool,
 ) -> egui::Response {
     let height = 30.0;
@@ -1261,8 +1328,9 @@ fn tree_row(
         Color32::TRANSPARENT
     };
     ui.painter().rect_filled(rect, 6.0, bg);
+    let indent = 8.0 + f32::from(depth) * 14.0;
     let icon_rect = Rect::from_min_size(
-        egui::pos2(rect.left() + 8.0, rect.center().y - 9.0),
+        egui::pos2(rect.left() + indent, rect.center().y - 9.0),
         Vec2::splat(18.0),
     );
     icons::image(icon, 18.0).paint_at(ui, icon_rect);
@@ -1306,6 +1374,16 @@ fn label_with_icon(ui: &mut egui::Ui, icon: Icon, text: &str) {
 }
 
 // --- helpers -----------------------------------------------------------------
+
+/// Build a [`Folder`] from a `/messages/folders` response item.
+fn folder_from(v: &Value) -> Folder {
+    Folder {
+        id: v.get("id").and_then(|x| x.as_i64()).unwrap_or(0),
+        name: sfield(v, &["name", "nombre"]),
+        parent: v.get("parent_id").and_then(|x| x.as_i64()),
+        count: v.get("count").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+    }
+}
 
 fn bool_dir(m: &Value) -> bool {
     m.get("incoming")
