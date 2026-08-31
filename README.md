@@ -10,8 +10,11 @@ stack**. Every API call goes through the official
 
 ## Features
 
+- A polished three-pane layout (stations · message list · reading pane) with a
+  toolbar, status bar and Axialis icons — an Outlook-style feel.
 - Connect to `free`, `b2b`, or any self-hosted AS2Expert deployment.
-- Browse messages by station, search by subject or partner.
+- Browse messages by station, search by subject or partner; incoming/outgoing
+  and MDN status shown at a glance.
 - Read a message: metadata (partner, AS2 id, MDN, signature, encryption) and
   its decoded payload.
 - Organize: mark read / unread, delete, save the payload to disk.
@@ -87,6 +90,12 @@ Kept deliberately small for a GUI: `eframe`/`egui` (glow backend, no wgpu, no
 webview), the `as2expert` SDK, a `tokio` runtime for off-thread calls, and
 `serde_json`. No native file-dialog crate — the compose window accepts a dropped
 file or a typed path.
+
+## Icons
+
+Toolbar and list icons are from the **Axialis** icon set, bundled under
+`assets/icons/`. The application code is Apache-2.0; the icons remain under their
+respective Axialis license.
 
 ## License
 

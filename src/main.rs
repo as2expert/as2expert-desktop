@@ -4,18 +4,35 @@
 
 mod app;
 mod config;
+mod icons;
 mod remote;
 
 use eframe::egui;
 
 fn native_options() -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("AS2Expert Desktop")
+        .with_inner_size([1180.0, 760.0])
+        .with_min_inner_size([900.0, 560.0]);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("AS2Expert Desktop")
-            .with_inner_size([1120.0, 720.0])
-            .with_min_inner_size([820.0, 520.0]),
+        viewport,
         ..Default::default()
     }
+}
+
+/// Decode the bundled logo into a window/taskbar icon.
+fn app_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../assets/icons/logo.png");
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
 }
 
 fn run() -> eframe::Result<()> {

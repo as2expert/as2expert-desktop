@@ -70,7 +70,11 @@ jobs:
           Write-Host "Mesa asset: $($asset.name)"
           Invoke-WebRequest -Headers $headers $asset.browser_download_url -OutFile mesa.7z
           7z x mesa.7z -omesa_x -y | Out-Null
-          Copy-Item mesa_x/x64/*.dll pkg/mesa/
+          # Only the DLLs llvmpipe software OpenGL actually needs (keeps the
+          # download small); copy each if the Mesa build provides it.
+          foreach ($dll in @("opengl32.dll","libgallium_wgl.dll","libglapi.dll")) {
+            if (Test-Path "mesa_x/x64/$dll") { Copy-Item "mesa_x/x64/$dll" pkg/mesa/ }
+          }
           7z a "${{ matrix.asset }}" ./pkg/*
 
       - name: Build (macOS universal)

@@ -1,14 +1,27 @@
-//! The AS2Expert desktop application: an email-client-style UI over the SDK.
+//! The AS2Expert desktop application: an Outlook-style client over the SDK.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use as2expert::AS2ExpertClient;
-use eframe::egui;
+use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Rect, RichText, Stroke, Vec2};
 use serde_json::{json, Value};
 
 use crate::config::Config;
+use crate::icons::{self, Icon};
+
+// --- Palette (light, professional) -------------------------------------------
+const ACCENT: Color32 = Color32::from_rgb(0x10, 0x6E, 0xBE);
+const ACCENT_SOFT: Color32 = Color32::from_rgb(0xDB, 0xE8, 0xF7);
+const HOVER_SOFT: Color32 = Color32::from_rgb(0xED, 0xF2, 0xF9);
+const PANEL: Color32 = Color32::from_rgb(0xF3, 0xF4, 0xF6);
+const CARD: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+const BORDER: Color32 = Color32::from_rgb(0xE1, 0xE3, 0xE8);
+const TEXT: Color32 = Color32::from_rgb(0x20, 0x24, 0x2A);
+const MUTED: Color32 = Color32::from_rgb(0x6B, 0x72, 0x80);
+const DANGER: Color32 = Color32::from_rgb(0xC4, 0x3B, 0x3B);
+const OK_GREEN: Color32 = Color32::from_rgb(0x1E, 0x8E, 0x3E);
 
 /// Results delivered from background API tasks to the UI thread.
 enum Event {
@@ -67,6 +80,9 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+        apply_theme(&cc.egui_ctx);
+
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -330,7 +346,7 @@ impl App {
                     self.inflight = self.inflight.saturating_sub(1);
                     match r {
                         Ok(v) => {
-                            self.status = format!("{} messages.", v.len());
+                            self.status = format!("{} messages", v.len());
                             self.messages = v;
                             self.selected = None;
                             self.opened = None;
@@ -403,7 +419,6 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
-        // Absorb any file dropped onto the window into the compose field.
         ctx.input(|i| {
             if let Some(f) = i.raw.dropped_files.first() {
                 if let Some(p) = &f.path {
@@ -424,92 +439,117 @@ impl eframe::App for App {
 
 impl App {
     fn ui_login(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(60.0);
-                ui.heading("AS2Expert Desktop");
-                ui.label("Connect to your AS2Expert account.");
-                ui.add_space(20.0);
-            });
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_max_width(520.0);
-                egui::Grid::new("login")
-                    .num_columns(2)
-                    .spacing([12.0, 10.0])
-                    .show(ui, |ui| {
-                        ui.label("Environment");
-                        egui::ComboBox::from_id_salt("env")
-                            .selected_text(pretty_env(&self.config.environment))
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.config.environment,
-                                    "free".into(),
-                                    "Free (free.as2expert.com)",
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(PANEL))
+            .show(ctx, |ui| {
+                ui.add_space(56.0);
+                ui.vertical_centered(|ui| {
+                    icons::show(ui, Icon::Logo, 56.0);
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("AS2Expert Desktop")
+                            .size(24.0)
+                            .strong()
+                            .color(TEXT),
+                    );
+                    ui.label(RichText::new("Connect to your AS2Expert account").color(MUTED));
+                    ui.add_space(18.0);
+                });
+
+                ui.vertical_centered(|ui| {
+                    egui::Frame::default()
+                        .fill(CARD)
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .rounding(10.0)
+                        .inner_margin(20.0)
+                        .show(ui, |ui| {
+                            ui.set_width(440.0);
+                            egui::Grid::new("login")
+                                .num_columns(2)
+                                .spacing([12.0, 12.0])
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new("Environment").color(MUTED));
+                                    egui::ComboBox::from_id_salt("env")
+                                        .width(260.0)
+                                        .selected_text(pretty_env(&self.config.environment))
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.config.environment,
+                                                "free".into(),
+                                                "Free — free.as2expert.com",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.config.environment,
+                                                "b2b".into(),
+                                                "B2B — b2b.as2expert.com",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.config.environment,
+                                                "custom".into(),
+                                                "Custom base URL",
+                                            );
+                                        });
+                                    ui.end_row();
+
+                                    if self.config.environment == "custom" {
+                                        ui.label(RichText::new("Base URL").color(MUTED));
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.config.base_url)
+                                                .hint_text("https://your-host/api/v1")
+                                                .desired_width(260.0),
+                                        );
+                                        ui.end_row();
+                                    }
+
+                                    ui.label(RichText::new("API token").color(MUTED));
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.config.token)
+                                            .password(true)
+                                            .hint_text("Bearer token")
+                                            .desired_width(260.0),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label("");
+                                    ui.checkbox(
+                                        &mut self.config.remember_token,
+                                        "Remember token on this device",
+                                    );
+                                    ui.end_row();
+                                });
+
+                            ui.add_space(14.0);
+                            let busy = self.inflight > 0;
+                            ui.horizontal(|ui| {
+                                let connect = ui.add_enabled(
+                                    !busy,
+                                    egui::Button::image_and_text(
+                                        icons::image(Icon::Key, 18.0),
+                                        RichText::new("  Connect  ").strong(),
+                                    )
+                                    .fill(ACCENT),
                                 );
-                                ui.selectable_value(
-                                    &mut self.config.environment,
-                                    "b2b".into(),
-                                    "B2B (b2b.as2expert.com)",
-                                );
-                                ui.selectable_value(
-                                    &mut self.config.environment,
-                                    "custom".into(),
-                                    "Custom base URL",
-                                );
+                                if connect.clicked() {
+                                    self.connect();
+                                }
+                                if busy {
+                                    ui.add_space(6.0);
+                                    ui.spinner();
+                                }
                             });
-                        ui.end_row();
 
-                        if self.config.environment == "custom" {
-                            ui.label("Base URL");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.config.base_url)
-                                    .hint_text("https://your-host/api/v1")
-                                    .desired_width(320.0),
-                            );
-                            ui.end_row();
-                        }
-
-                        ui.label("API token");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.config.token)
-                                .password(true)
-                                .hint_text("Bearer token")
-                                .desired_width(320.0),
-                        );
-                        ui.end_row();
-
-                        ui.label("");
-                        ui.checkbox(
-                            &mut self.config.remember_token,
-                            "Remember token on this device",
-                        );
-                        ui.end_row();
-                    });
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let busy = self.inflight > 0;
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("Connect"))
-                        .clicked()
-                    {
-                        self.connect();
-                    }
-                    if busy {
-                        ui.spinner();
-                    }
+                            if let Some(err) = self.error.clone() {
+                                ui.add_space(10.0);
+                                ui.colored_label(DANGER, err);
+                            }
+                        });
                 });
             });
-
-            if let Some(err) = self.error.clone() {
-                ui.add_space(10.0);
-                ui.colored_label(egui::Color32::from_rgb(0xd3, 0x3a, 0x3a), err);
-            }
-        });
     }
 
     fn ui_main(&mut self, ctx: &egui::Context) {
         self.ui_toolbar(ctx);
+        self.ui_statusbar(ctx);
         self.ui_stations(ctx);
         if self.selected.is_some() {
             self.ui_detail(ctx);
@@ -521,70 +561,115 @@ impl App {
     }
 
     fn ui_toolbar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.button("⟳ Receive / Refresh").clicked() {
-                    self.refresh_messages();
-                }
-                if ui.button("✉ New message").clicked() {
-                    if self.partners.is_empty() {
-                        self.load_partners();
-                    }
-                    self.compose_open = true;
-                }
-                ui.separator();
-                ui.label("Search:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("subject or partner")
-                        .desired_width(220.0),
-                );
-                if !self.search.is_empty() && ui.button("✕").clicked() {
-                    self.search.clear();
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Log out").clicked() {
-                        self.logout();
-                    }
-                    if self.inflight > 0 {
-                        ui.spinner();
-                    }
-                    ui.label(&self.status);
-                });
-            });
-            ui.add_space(4.0);
-        });
-        if let Some(err) = self.error.clone() {
-            egui::TopBottomPanel::top("errbar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("toolbar")
+            .frame(
+                egui::Frame::default()
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(egui::Margin::symmetric(10.0, 7.0)),
+            )
+            .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(0xd3, 0x3a, 0x3a),
-                        format!("⚠ {err}"),
+                    if icons::labeled_button(ui, Icon::Refresh, 18.0, "Receive").clicked() {
+                        self.refresh_messages();
+                    }
+                    if icons::labeled_button(ui, Icon::Compose, 18.0, "New message").clicked() {
+                        if self.partners.is_empty() {
+                            self.load_partners();
+                        }
+                        self.compose_open = true;
+                    }
+                    ui.separator();
+                    icons::show(ui, Icon::Search, 16.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search subject or partner")
+                            .desired_width(240.0),
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Dismiss").clicked() {
-                            self.error = None;
+                    if !self.search.is_empty() && ui.small_button("✕").clicked() {
+                        self.search.clear();
+                    }
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if icons::tool_button(ui, Icon::Key, 18.0, "Log out").clicked() {
+                            self.logout();
+                        }
+                        if self.inflight > 0 {
+                            ui.spinner();
                         }
                     });
                 });
             });
+
+        if let Some(err) = self.error.clone() {
+            egui::TopBottomPanel::top("errbar")
+                .frame(
+                    egui::Frame::default()
+                        .fill(Color32::from_rgb(0xFD, 0xEC, 0xEC))
+                        .inner_margin(egui::Margin::symmetric(10.0, 6.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        icons::show(ui, Icon::Warning, 16.0);
+                        ui.colored_label(DANGER, err);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                self.error = None;
+                            }
+                        });
+                    });
+                });
         }
+    }
+
+    fn ui_statusbar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("statusbar")
+            .frame(
+                egui::Frame::default()
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(egui::Margin::symmetric(10.0, 4.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    icons::show(ui, Icon::Station, 14.0);
+                    ui.label(
+                        RichText::new(self.config.resolved_base_url())
+                            .small()
+                            .color(MUTED),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(&self.status).small().color(MUTED));
+                    });
+                });
+            });
     }
 
     fn ui_stations(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("stations")
             .resizable(true)
-            .default_width(220.0)
+            .default_width(232.0)
+            .frame(
+                egui::Frame::default()
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(8.0, 8.0)),
+            )
             .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    icons::show(ui, Icon::Inbox, 18.0);
+                    ui.label(RichText::new("Stations").strong().color(TEXT));
+                });
                 ui.add_space(6.0);
-                ui.heading("Stations");
-                ui.separator();
+
                 let mut changed = None;
-                if ui
-                    .selectable_label(self.selected_station.is_none(), "📥 All stations")
-                    .clicked()
+                if station_row(
+                    ui,
+                    Icon::Inbox,
+                    "All stations",
+                    "",
+                    self.selected_station.is_none(),
+                )
+                .clicked()
                 {
                     changed = Some(None);
                 }
@@ -593,15 +678,8 @@ impl App {
                         let id = st.get("id").and_then(|v| v.as_i64());
                         let name = sfield(st, &["name", "nombre"]);
                         let as2 = sfield(st, &["as2_id", "as2id"]);
-                        let label = if as2.is_empty() {
-                            name.clone()
-                        } else {
-                            format!("{name}\n{as2}")
-                        };
-                        if ui
-                            .selectable_label(self.selected_station == id && id.is_some(), label)
-                            .clicked()
-                        {
+                        let sel = self.selected_station == id && id.is_some();
+                        if station_row(ui, Icon::Station, &name, &as2, sel).clicked() {
                             changed = Some(id);
                         }
                     }
@@ -614,77 +692,59 @@ impl App {
     }
 
     fn ui_list(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let needle = self.search.to_lowercase();
-            let mut to_open = None;
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (i, m) in self.messages.iter().enumerate() {
-                    let subject = sfield(m, &["subject", "asunto"]);
-                    let partner = sfield(m, &["partner_name", "socio_nombre"]);
-                    let date = sfield(m, &["date", "fecha"]);
-                    let folder = sfield(m, &["folder_name"]);
-                    let mdn = sfield(m, &["mdn"]);
-                    let incoming = m
-                        .get("incoming")
-                        .or_else(|| m.get("entrante"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if !needle.is_empty()
-                        && !subject.to_lowercase().contains(&needle)
-                        && !partner.to_lowercase().contains(&needle)
-                    {
-                        continue;
-                    }
-                    let dir = if incoming { "⬇" } else { "⬆" };
-                    let head = format!(
-                        "{dir}  {}",
-                        if subject.is_empty() {
-                            "(no subject)"
-                        } else {
-                            &subject
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(CARD).inner_margin(0.0))
+            .show(ctx, |ui| {
+                let needle = self.search.to_lowercase();
+                let mut to_open = None;
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let mut shown = 0;
+                        for (i, m) in self.messages.iter().enumerate() {
+                            let subject = sfield(m, &["subject", "asunto"]);
+                            let partner = sfield(m, &["partner_name", "socio_nombre"]);
+                            if !needle.is_empty()
+                                && !subject.to_lowercase().contains(&needle)
+                                && !partner.to_lowercase().contains(&needle)
+                            {
+                                continue;
+                            }
+                            shown += 1;
+                            if message_row(ui, m, self.selected == Some(i)).clicked() {
+                                to_open = Some(i);
+                            }
                         }
-                    );
-                    let sub = format!(
-                        "{partner}  ·  {}  ·  {folder}  ·  MDN {mdn}",
-                        short_date(&date)
-                    );
-                    let text = egui::RichText::new(format!("{head}\n{sub}"));
-                    if ui
-                        .selectable_label(self.selected == Some(i), text)
-                        .clicked()
-                    {
-                        to_open = Some(i);
-                    }
-                    ui.separator();
-                }
-                if self.messages.is_empty() && self.inflight == 0 {
-                    ui.add_space(20.0);
-                    ui.weak("No messages. Use Receive / Refresh, or pick a station.");
+                        if shown == 0 && self.inflight == 0 {
+                            ui.add_space(40.0);
+                            ui.vertical_centered(|ui| {
+                                icons::show(ui, Icon::Inbox, 40.0);
+                                ui.label(RichText::new("No messages").color(MUTED));
+                                ui.label(
+                                    RichText::new("Use Receive, or pick another station.")
+                                        .small()
+                                        .color(MUTED),
+                                );
+                            });
+                        }
+                    });
+                if let Some(i) = to_open {
+                    self.open_message(i);
                 }
             });
-            if let Some(i) = to_open {
-                self.open_message(i);
-            }
-        });
     }
 
     fn ui_detail(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("detail")
             .resizable(true)
-            .default_width(460.0)
+            .default_width(480.0)
+            .frame(
+                egui::Frame::default()
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(14.0),
+            )
             .show(ctx, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.heading("Message");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            self.selected = None;
-                            self.opened = None;
-                        }
-                    });
-                });
-                ui.separator();
-
                 let m = match self.opened.clone() {
                     Some(m) => m,
                     None => {
@@ -696,56 +756,82 @@ impl App {
                     }
                 };
 
+                let incoming = m
+                    .get("incoming")
+                    .or_else(|| m.get("entrante"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                ui.horizontal(|ui| {
+                    icons::show(ui, if incoming { Icon::In } else { Icon::Out }, 26.0);
+                    ui.label(
+                        RichText::new(sfield(&m, &["subject", "asunto"]))
+                            .size(16.0)
+                            .strong()
+                            .color(TEXT),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Close").clicked() {
+                            self.selected = None;
+                            self.opened = None;
+                        }
+                    });
+                });
+                ui.separator();
+
                 egui::Grid::new("detail_grid")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
+                    .num_columns(3)
+                    .spacing([8.0, 7.0])
                     .show(ui, |ui| {
-                        detail_row(ui, "Subject", &sfield(&m, &["subject", "asunto"]));
-                        detail_row(
+                        meta_row(
                             ui,
+                            Icon::Partner,
                             "Partner",
                             &sfield(&m, &["partner_name", "socio_nombre"]),
                         );
-                        detail_row(
+                        meta_row(
                             ui,
-                            "AS2 ID",
-                            &sfield(&m, &["partner_as2_id", "socio_as2id"]),
-                        );
-                        detail_row(
-                            ui,
+                            Icon::Station,
                             "Station",
                             &sfield(&m, &["station_name", "estacion_nombre"]),
                         );
-                        detail_row(ui, "Date", &sfield(&m, &["date", "fecha"]));
-                        detail_row(ui, "Message ID", &sfield(&m, &["message_id", "idmensaje"]));
-                        detail_row(ui, "MDN", &sfield(&m, &["mdn"]));
-                        detail_row(ui, "Encryption", &sfield(&m, &["encriptacion"]));
-                        detail_row(ui, "Signature", &sfield(&m, &["firma"]));
+                        meta_row(ui, Icon::Message, "Date", &sfield(&m, &["date", "fecha"]));
+                        meta_row(
+                            ui,
+                            Icon::Certificate,
+                            "AS2 ID",
+                            &sfield(&m, &["partner_as2_id", "socio_as2id"]),
+                        );
+                        meta_row(ui, Icon::Ok, "MDN", &sfield(&m, &["mdn"]));
+                        meta_row(ui, Icon::Lock, "Encryption", &sfield(&m, &["encriptacion"]));
+                        meta_row(ui, Icon::Key, "Signature", &sfield(&m, &["firma"]));
                     });
 
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Mark read").clicked() {
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    if icons::labeled_button(ui, Icon::Read, 16.0, "Mark read").clicked() {
                         self.message_action("mark-read", "Mark read");
                     }
-                    if ui.button("Mark unread").clicked() {
+                    if icons::labeled_button(ui, Icon::Unread, 16.0, "Mark unread").clicked() {
                         self.message_action("mark-unread", "Mark unread");
                     }
-                    if ui.button("Save payload").clicked() {
+                    if icons::labeled_button(ui, Icon::Save, 16.0, "Save payload").clicked() {
                         self.save_payload();
                     }
-                    if ui.button("🗑 Delete").clicked() {
+                    if icons::labeled_button(ui, Icon::Delete, 16.0, "Delete").clicked() {
                         self.message_action("delete", "Delete");
                         self.selected = None;
                         self.opened = None;
                     }
                 });
 
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new("Payload").strong());
-                if let Some(note) = &self.body_note {
-                    ui.weak(note);
-                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    icons::show(ui, Icon::Attach, 16.0);
+                    ui.label(RichText::new("Payload").strong().color(TEXT));
+                    if let Some(note) = &self.body_note {
+                        ui.label(RichText::new(note).small().color(MUTED));
+                    }
+                });
                 ui.separator();
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
@@ -755,11 +841,11 @@ impl App {
                                 egui::TextEdit::multiline(&mut t.as_str())
                                     .font(egui::TextStyle::Monospace)
                                     .desired_width(f32::INFINITY)
-                                    .desired_rows(18),
+                                    .desired_rows(16),
                             );
                         }
                         None => {
-                            ui.weak("(no text payload)");
+                            ui.label(RichText::new("(no text payload)").color(MUTED));
                         }
                     });
             });
@@ -767,16 +853,17 @@ impl App {
 
     fn ui_compose(&mut self, ctx: &egui::Context) {
         let mut open = self.compose_open;
-        egui::Window::new("New message")
+        egui::Window::new(RichText::new("  New message").strong())
             .open(&mut open)
             .resizable(true)
-            .default_width(460.0)
+            .collapsible(false)
+            .default_width(480.0)
             .show(ctx, |ui| {
                 egui::Grid::new("compose")
                     .num_columns(2)
-                    .spacing([10.0, 8.0])
+                    .spacing([10.0, 10.0])
                     .show(ui, |ui| {
-                        ui.label("Partner");
+                        label_with_icon(ui, Icon::Partner, "Partner");
                         let current = self
                             .partners
                             .get(self.compose_partner)
@@ -784,7 +871,7 @@ impl App {
                             .unwrap_or_else(|| "— pick a partner —".into());
                         egui::ComboBox::from_id_salt("partner")
                             .selected_text(current)
-                            .width(300.0)
+                            .width(320.0)
                             .show_ui(ui, |ui| {
                                 for (i, p) in self.partners.iter().enumerate() {
                                     ui.selectable_value(
@@ -796,44 +883,257 @@ impl App {
                             });
                         ui.end_row();
 
-                        ui.label("Subject");
+                        label_with_icon(ui, Icon::Message, "Subject");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.compose_subject)
                                 .hint_text("(defaults to the file name)")
-                                .desired_width(300.0),
+                                .desired_width(320.0),
                         );
                         ui.end_row();
 
-                        ui.label("File");
+                        label_with_icon(ui, Icon::Attach, "File");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.compose_file)
                                 .hint_text("path to the EDI file — or drag one onto the window")
-                                .desired_width(300.0),
+                                .desired_width(320.0),
                         );
                         ui.end_row();
                     });
 
-                ui.add_space(8.0);
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let busy = self.compose_sending;
                     let ready = !self.partners.is_empty() && !self.compose_file.trim().is_empty();
-                    if ui
-                        .add_enabled(!busy && ready, egui::Button::new("Send"))
-                        .clicked()
-                    {
+                    let send = ui.add_enabled(
+                        !busy && ready,
+                        egui::Button::image_and_text(
+                            icons::image(Icon::Send, 18.0),
+                            RichText::new("Send").strong(),
+                        )
+                        .fill(ACCENT),
+                    );
+                    if send.clicked() {
                         self.send_message();
                     }
                     if busy {
                         ui.spinner();
                     }
                     if self.partners.is_empty() {
-                        ui.weak("Loading partners…");
+                        ui.label(RichText::new("Loading partners…").small().color(MUTED));
                     }
                 });
             });
-        // Respect the window's own close button.
         self.compose_open = open;
     }
+}
+
+// --- Theme -------------------------------------------------------------------
+
+fn apply_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    let mut v = egui::Visuals::light();
+    v.panel_fill = PANEL;
+    v.window_fill = CARD;
+    v.extreme_bg_color = CARD;
+    v.override_text_color = Some(TEXT);
+    v.hyperlink_color = ACCENT;
+    v.selection.bg_fill = ACCENT_SOFT;
+    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
+    let rounding = egui::Rounding::same(6.0);
+    v.widgets.noninteractive.rounding = rounding;
+    v.widgets.inactive.rounding = rounding;
+    v.widgets.hovered.rounding = rounding;
+    v.widgets.active.rounding = rounding;
+    v.widgets.open.rounding = rounding;
+    v.widgets.hovered.weak_bg_fill = HOVER_SOFT;
+    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(0xEC, 0xEE, 0xF1);
+    style.visuals = v;
+
+    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+    style.spacing.button_padding = Vec2::new(10.0, 6.0);
+    style.spacing.window_margin = egui::Margin::same(12.0);
+    style.spacing.interact_size.y = 26.0;
+
+    use egui::FontFamily::{Monospace, Proportional};
+    use egui::TextStyle::{Body, Button, Heading, Monospace as Mono, Small};
+    style.text_styles = [
+        (Heading, FontId::new(20.0, Proportional)),
+        (Body, FontId::new(14.0, Proportional)),
+        (Button, FontId::new(14.0, Proportional)),
+        (Small, FontId::new(11.5, Proportional)),
+        (Mono, FontId::new(12.5, Monospace)),
+    ]
+    .into();
+
+    ctx.set_style(style);
+}
+
+// --- Row widgets -------------------------------------------------------------
+
+/// A station/folder entry in the left sidebar. Returns its click response.
+fn station_row(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    name: &str,
+    sub: &str,
+    selected: bool,
+) -> egui::Response {
+    let two_line = !sub.is_empty();
+    let height = if two_line { 42.0 } else { 30.0 };
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    let bg = if selected {
+        ACCENT_SOFT
+    } else if resp.hovered() {
+        HOVER_SOFT
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, 6.0, bg);
+    let icon_rect = Rect::from_min_size(
+        egui::pos2(rect.left() + 8.0, rect.center().y - 9.0),
+        Vec2::splat(18.0),
+    );
+    icons::image(icon, 18.0).paint_at(ui, icon_rect);
+    let tx = icon_rect.right() + 8.0;
+    let p = ui.painter();
+    let name_color = if selected { ACCENT } else { TEXT };
+    if two_line {
+        p.text(
+            egui::pos2(tx, rect.top() + 6.0),
+            Align2::LEFT_TOP,
+            trunc(name, 26),
+            FontId::proportional(13.0),
+            name_color,
+        );
+        p.text(
+            egui::pos2(tx, rect.top() + 23.0),
+            Align2::LEFT_TOP,
+            trunc(sub, 28),
+            FontId::proportional(11.0),
+            MUTED,
+        );
+    } else {
+        p.text(
+            egui::pos2(tx, rect.center().y),
+            Align2::LEFT_CENTER,
+            name,
+            FontId::proportional(13.5),
+            name_color,
+        );
+    }
+    resp
+}
+
+/// An Outlook-style message row. Returns its click response.
+fn message_row(ui: &mut egui::Ui, m: &Value, selected: bool) -> egui::Response {
+    let height = 50.0;
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    let bg = if selected {
+        ACCENT_SOFT
+    } else if resp.hovered() {
+        HOVER_SOFT
+    } else {
+        CARD
+    };
+    ui.painter().rect_filled(rect, 0.0, bg);
+    // left accent bar when selected
+    if selected {
+        ui.painter().rect_filled(
+            Rect::from_min_size(rect.left_top(), Vec2::new(3.0, rect.height())),
+            0.0,
+            ACCENT,
+        );
+    }
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom(),
+        Stroke::new(1.0, Color32::from_rgb(0xEF, 0xF0, 0xF2)),
+    );
+
+    let incoming = m
+        .get("incoming")
+        .or_else(|| m.get("entrante"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let icon_rect = Rect::from_min_size(
+        egui::pos2(rect.left() + 12.0, rect.center().y - 12.0),
+        Vec2::splat(24.0),
+    );
+    icons::image(if incoming { Icon::In } else { Icon::Out }, 24.0).paint_at(ui, icon_rect);
+
+    let subject = sfield(m, &["subject", "asunto"]);
+    let partner = sfield(m, &["partner_name", "socio_nombre"]);
+    let folder = sfield(m, &["folder_name"]);
+    let mdn = sfield(m, &["mdn"]);
+    let date = short_date(&sfield(m, &["date", "fecha"]));
+
+    let tx = icon_rect.right() + 10.0;
+    let p = ui.painter();
+    let subj = if subject.is_empty() {
+        "(no subject)".to_string()
+    } else {
+        subject
+    };
+    p.text(
+        egui::pos2(tx, rect.top() + 9.0),
+        Align2::LEFT_TOP,
+        trunc(&subj, 52),
+        FontId::proportional(14.0),
+        TEXT,
+    );
+    let meta = format!("{}  ·  {}", trunc(&partner, 34), folder);
+    p.text(
+        egui::pos2(tx, rect.top() + 28.0),
+        Align2::LEFT_TOP,
+        meta,
+        FontId::proportional(11.5),
+        MUTED,
+    );
+
+    // right column: date + MDN status
+    p.text(
+        egui::pos2(rect.right() - 12.0, rect.top() + 9.0),
+        Align2::RIGHT_TOP,
+        date,
+        FontId::proportional(11.5),
+        MUTED,
+    );
+    if !mdn.is_empty() {
+        let ok = mdn.eq_ignore_ascii_case("ok");
+        p.text(
+            egui::pos2(rect.right() - 12.0, rect.top() + 27.0),
+            Align2::RIGHT_TOP,
+            format!("MDN {mdn}"),
+            FontId::proportional(11.0),
+            if ok { OK_GREEN } else { DANGER },
+        );
+    }
+    resp
+}
+
+/// A metadata row in the reading pane: small icon, muted label, value.
+fn meta_row(ui: &mut egui::Ui, icon: Icon, label: &str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    icons::show(ui, icon, 15.0);
+    ui.label(RichText::new(label).color(MUTED));
+    ui.label(RichText::new(value).color(TEXT));
+    ui.end_row();
+}
+
+fn label_with_icon(ui: &mut egui::Ui, icon: Icon, text: &str) {
+    ui.horizontal(|ui| {
+        icons::show(ui, icon, 16.0);
+        ui.label(RichText::new(text).color(MUTED));
+    });
 }
 
 // --- helpers -----------------------------------------------------------------
@@ -851,15 +1151,6 @@ fn sfield(v: &Value, keys: &[&str]) -> String {
     String::new()
 }
 
-fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    if value.is_empty() {
-        return;
-    }
-    ui.label(egui::RichText::new(label).weak());
-    ui.label(value);
-    ui.end_row();
-}
-
 fn partner_label(p: &Value) -> String {
     let name = sfield(p, &["name", "nombre"]);
     let as2 = sfield(p, &["as2_id", "as2id"]);
@@ -872,19 +1163,28 @@ fn partner_label(p: &Value) -> String {
 
 fn pretty_env(env: &str) -> &str {
     match env {
-        "b2b" => "B2B (b2b.as2expert.com)",
+        "b2b" => "B2B — b2b.as2expert.com",
         "custom" => "Custom base URL",
-        _ => "Free (free.as2expert.com)",
+        _ => "Free — free.as2expert.com",
     }
 }
 
 fn short_date(d: &str) -> String {
-    // "2026-08-30 10:13:17.192968" -> "2026-08-30 10:13"
     let cut = d.split('.').next().unwrap_or(d);
     if cut.len() >= 16 {
         cut[..16].to_string()
     } else {
         cut.to_string()
+    }
+}
+
+fn trunc(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 
