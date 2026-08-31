@@ -10,16 +10,18 @@ stack**. Every API call goes through the official
 
 ## Features
 
-- A polished three-pane layout (stations · message list · reading pane) with a
-  toolbar, status bar and Axialis icons — an Outlook-style feel.
+- A web-portal-style layout: a **station picker** in the toolbar, a **folder
+  tree** on the left, a sortable **message grid** in the centre, and a **reading
+  pane** on the right — with Axialis icons and a refined light theme.
 - Connect to `free`, `b2b`, or any self-hosted AS2Expert deployment.
-- Browse messages by station, search by subject or partner; incoming/outgoing
-  and MDN status shown at a glance.
+- Pick a station, browse its folders, sort by subject/partner/date/MDN, and
+  search by subject or partner; incoming/outgoing and MDN status at a glance.
 - Read a message: metadata (partner, AS2 id, MDN, signature, encryption) and
   its decoded payload.
-- Organize: mark read / unread, delete, save the payload to disk.
-- Compose and send a new message to a trading partner (drag a file onto the
-  window, or type its path).
+- Organize: mark read / unread, delete, and **download the payload to a location
+  you choose** (native save dialog).
+- Compose and send a new message to a trading partner — **Browse** for the file
+  (native open dialog) or drag it onto the window.
 - All work runs off the UI thread; the window stays responsive.
 
 ## Install

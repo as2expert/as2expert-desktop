@@ -1,6 +1,6 @@
 [package]
 name = "as2expert-desktop"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.76"
 description = "Native cross-platform desktop client for AS2Expert — read, organize, send and receive AS2/EDI messages."
@@ -26,6 +26,8 @@ eframe = { version = "0.29", default-features = false, features = [
 # Image loaders so the app can render the bundled Axialis PNG icons.
 egui_extras = { version = "0.29", default-features = false, features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Native save/open dialogs (Windows/macOS native; GTK on Linux).
+rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
 # The AS2Expert Rust SDK (async client) drives every API call.
 as2expert = { git = "https://github.com/as2expert/as2expert-rust", branch = "main" }
 # A shared multi-threaded runtime lets API calls run off the UI thread.

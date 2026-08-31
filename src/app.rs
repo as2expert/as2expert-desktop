@@ -1,11 +1,16 @@
-//! The AS2Expert desktop application: an Outlook-style client over the SDK.
+//! The AS2Expert desktop application: a web-app-style client over the SDK.
+//!
+//! Layout mirrors the web portal: a station picker in the toolbar, a folder tree
+//! on the left, a message grid in the centre, and a reading pane on the right.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use as2expert::AS2ExpertClient;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Rect, RichText, Stroke, Vec2};
+use egui_extras::{Column, TableBuilder};
 use serde_json::{json, Value};
 
 use crate::config::Config;
@@ -22,6 +27,21 @@ const TEXT: Color32 = Color32::from_rgb(0x20, 0x24, 0x2A);
 const MUTED: Color32 = Color32::from_rgb(0x6B, 0x72, 0x80);
 const DANGER: Color32 = Color32::from_rgb(0xC4, 0x3B, 0x3B);
 const OK_GREEN: Color32 = Color32::from_rgb(0x1E, 0x8E, 0x3E);
+
+/// A folder derived from the loaded messages.
+struct Folder {
+    id: i64,
+    name: String,
+    count: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SortKey {
+    Subject,
+    Partner,
+    Date,
+    Mdn,
+}
 
 /// Results delivered from background API tasks to the UI thread.
 enum Event {
@@ -57,6 +77,8 @@ pub struct App {
     stations: Vec<Value>,
     selected_station: Option<i64>,
     messages: Vec<Value>,
+    folders: Vec<Folder>,
+    selected_folder: Option<i64>,
     selected: Option<usize>,
     opened: Option<Value>,
     body_text: Option<String>,
@@ -66,6 +88,8 @@ pub struct App {
 
     // UI
     search: String,
+    sort_key: SortKey,
+    sort_asc: bool,
     inflight: u32,
     error: Option<String>,
     status: String,
@@ -100,6 +124,8 @@ impl App {
             stations: Vec::new(),
             selected_station: None,
             messages: Vec::new(),
+            folders: Vec::new(),
+            selected_folder: None,
             selected: None,
             opened: None,
             body_text: None,
@@ -107,6 +133,8 @@ impl App {
             body_note: None,
             partners: Vec::new(),
             search: String::new(),
+            sort_key: SortKey::Date,
+            sort_asc: false,
             inflight: 0,
             error: None,
             status: String::new(),
@@ -169,7 +197,7 @@ impl App {
     fn refresh_messages(&mut self) {
         let Some(c) = self.client.clone() else { return };
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        let mut body = json!({ "limit": 200 });
+        let mut body = json!({ "limit": 500 });
         if let Some(sid) = self.selected_station {
             body["station"] = json!(sid);
         }
@@ -277,6 +305,7 @@ impl App {
         });
     }
 
+    /// Save the current payload, letting the user pick the destination.
     fn save_payload(&mut self) {
         let Some(bytes) = self.body_bytes.clone() else {
             return;
@@ -297,10 +326,18 @@ impl App {
                 }
             })
             .collect();
-        let dest = downloads_dir().join(format!("{safe}.edi"));
-        match std::fs::write(&dest, &bytes) {
-            Ok(_) => self.status = format!("Saved payload → {}", dest.display()),
-            Err(e) => self.error = Some(format!("Save failed: {e}")),
+        if let Some(dest) = rfd::FileDialog::new()
+            .set_title("Save payload")
+            .set_directory(downloads_dir())
+            .set_file_name(format!("{safe}.edi"))
+            .add_filter("EDI / EDIFACT", &["edi", "txt", "dat", "xml"])
+            .add_filter("All files", &["*"])
+            .save_file()
+        {
+            match std::fs::write(&dest, &bytes) {
+                Ok(_) => self.status = format!("Saved → {}", dest.display()),
+                Err(e) => self.error = Some(format!("Save failed: {e}")),
+            }
         }
     }
 
@@ -310,11 +347,104 @@ impl App {
         self.messages.clear();
         self.stations.clear();
         self.partners.clear();
+        self.folders.clear();
+        self.selected_folder = None;
         self.selected = None;
         self.opened = None;
         self.body_text = None;
         self.body_bytes = None;
         self.status.clear();
+    }
+
+    /// Rebuild the folder list from the currently loaded messages.
+    fn derive_folders(&mut self) {
+        let mut folders: Vec<Folder> = Vec::new();
+        for m in &self.messages {
+            let Some(id) = m.get("folder_id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            if let Some(f) = folders.iter_mut().find(|f| f.id == id) {
+                f.count += 1;
+            } else {
+                let name = sfield(m, &["folder_name"]);
+                folders.push(Folder {
+                    id,
+                    name: if name.is_empty() {
+                        format!("Folder {id}")
+                    } else {
+                        name
+                    },
+                    count: 1,
+                });
+            }
+        }
+        folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        if let Some(sel) = self.selected_folder {
+            if !folders.iter().any(|f| f.id == sel) {
+                self.selected_folder = None;
+            }
+        }
+        self.folders = folders;
+    }
+
+    /// Indices of the messages to show, filtered by folder + search and sorted.
+    fn visible_indices(&self) -> Vec<usize> {
+        let needle = self.search.to_lowercase();
+        let mut idx: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                if let Some(fid) = self.selected_folder {
+                    if m.get("folder_id").and_then(|v| v.as_i64()) != Some(fid) {
+                        return false;
+                    }
+                }
+                if needle.is_empty() {
+                    return true;
+                }
+                sfield(m, &["subject", "asunto"])
+                    .to_lowercase()
+                    .contains(&needle)
+                    || sfield(m, &["partner_name", "socio_nombre"])
+                        .to_lowercase()
+                        .contains(&needle)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        let key = self.sort_key;
+        idx.sort_by(|&a, &b| {
+            let ma = &self.messages[a];
+            let mb = &self.messages[b];
+            let ord = match key {
+                SortKey::Subject => sfield(ma, &["subject", "asunto"])
+                    .to_lowercase()
+                    .cmp(&sfield(mb, &["subject", "asunto"]).to_lowercase()),
+                SortKey::Partner => sfield(ma, &["partner_name", "socio_nombre"])
+                    .to_lowercase()
+                    .cmp(&sfield(mb, &["partner_name", "socio_nombre"]).to_lowercase()),
+                SortKey::Date => {
+                    sfield(ma, &["date", "fecha"]).cmp(&sfield(mb, &["date", "fecha"]))
+                }
+                SortKey::Mdn => sfield(ma, &["mdn"]).cmp(&sfield(mb, &["mdn"])),
+            };
+            if self.sort_asc {
+                ord
+            } else {
+                ord.reverse()
+            }
+        });
+        idx
+    }
+
+    fn set_sort(&mut self, key: SortKey) {
+        if self.sort_key == key {
+            self.sort_asc = !self.sort_asc;
+        } else {
+            self.sort_key = key;
+            self.sort_asc = !matches!(key, SortKey::Date);
+        }
     }
 
     // --- Event pump ----------------------------------------------------------
@@ -348,6 +478,7 @@ impl App {
                         Ok(v) => {
                             self.status = format!("{} messages", v.len());
                             self.messages = v;
+                            self.derive_folders();
                             self.selected = None;
                             self.opened = None;
                             self.body_text = None;
@@ -550,11 +681,11 @@ impl App {
     fn ui_main(&mut self, ctx: &egui::Context) {
         self.ui_toolbar(ctx);
         self.ui_statusbar(ctx);
-        self.ui_stations(ctx);
+        self.ui_folders(ctx);
         if self.selected.is_some() {
             self.ui_detail(ctx);
         }
-        self.ui_list(ctx);
+        self.ui_grid(ctx);
         if self.compose_open {
             self.ui_compose(ctx);
         }
@@ -580,11 +711,52 @@ impl App {
                         self.compose_open = true;
                     }
                     ui.separator();
+
+                    // Station picker (like the web toolbar combo).
+                    icons::show(ui, Icon::Station, 16.0);
+                    let current = self
+                        .selected_station
+                        .and_then(|sid| {
+                            self.stations
+                                .iter()
+                                .find(|s| s.get("id").and_then(|v| v.as_i64()) == Some(sid))
+                        })
+                        .map(|s| sfield(s, &["name", "nombre"]))
+                        .unwrap_or_else(|| "All stations".into());
+                    let mut change: Option<Option<i64>> = None;
+                    egui::ComboBox::from_id_salt("station")
+                        .selected_text(current)
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(self.selected_station.is_none(), "All stations")
+                                .clicked()
+                            {
+                                change = Some(None);
+                            }
+                            for s in &self.stations {
+                                let id = s.get("id").and_then(|v| v.as_i64());
+                                let name = sfield(s, &["name", "nombre"]);
+                                if ui
+                                    .selectable_label(self.selected_station == id, name)
+                                    .clicked()
+                                {
+                                    change = Some(id);
+                                }
+                            }
+                        });
+                    if let Some(sel) = change {
+                        self.selected_station = sel;
+                        self.selected_folder = None;
+                        self.refresh_messages();
+                    }
+
+                    ui.separator();
                     icons::show(ui, Icon::Search, 16.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
                             .hint_text("Search subject or partner")
-                            .desired_width(240.0),
+                            .desired_width(200.0),
                     );
                     if !self.search.is_empty() && ui.small_button("✕").clicked() {
                         self.search.clear();
@@ -645,8 +817,8 @@ impl App {
             });
     }
 
-    fn ui_stations(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("stations")
+    fn ui_folders(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("folders")
             .resizable(true)
             .default_width(232.0)
             .frame(
@@ -657,78 +829,169 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     icons::show(ui, Icon::Inbox, 18.0);
-                    ui.label(RichText::new("Stations").strong().color(TEXT));
+                    ui.label(RichText::new("Folders").strong().color(TEXT));
                 });
                 ui.add_space(6.0);
 
-                let mut changed = None;
-                if station_row(
+                let total: usize = self.messages.len();
+                let mut change: Option<Option<i64>> = None;
+                if tree_row(
                     ui,
                     Icon::Inbox,
-                    "All stations",
-                    "",
-                    self.selected_station.is_none(),
+                    "All messages",
+                    Some(total),
+                    self.selected_folder.is_none(),
                 )
                 .clicked()
                 {
-                    changed = Some(None);
+                    change = Some(None);
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    for st in &self.stations {
-                        let id = st.get("id").and_then(|v| v.as_i64());
-                        let name = sfield(st, &["name", "nombre"]);
-                        let as2 = sfield(st, &["as2_id", "as2id"]);
-                        let sel = self.selected_station == id && id.is_some();
-                        if station_row(ui, Icon::Station, &name, &as2, sel).clicked() {
-                            changed = Some(id);
+                    for f in &self.folders {
+                        let sel = self.selected_folder == Some(f.id);
+                        if tree_row(ui, Icon::Folder, &f.name, Some(f.count), sel).clicked() {
+                            change = Some(Some(f.id));
                         }
                     }
+                    if self.folders.is_empty() {
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("No folders yet").small().color(MUTED));
+                    }
                 });
-                if let Some(sel) = changed {
-                    self.selected_station = sel;
-                    self.refresh_messages();
+                if let Some(sel) = change {
+                    self.selected_folder = sel;
+                    self.selected = None;
+                    self.opened = None;
                 }
             });
     }
 
-    fn ui_list(&mut self, ctx: &egui::Context) {
+    fn ui_grid(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(CARD).inner_margin(0.0))
             .show(ctx, |ui| {
-                let needle = self.search.to_lowercase();
-                let mut to_open = None;
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let mut shown = 0;
-                        for (i, m) in self.messages.iter().enumerate() {
-                            let subject = sfield(m, &["subject", "asunto"]);
-                            let partner = sfield(m, &["partner_name", "socio_nombre"]);
-                            if !needle.is_empty()
-                                && !subject.to_lowercase().contains(&needle)
-                                && !partner.to_lowercase().contains(&needle)
-                            {
-                                continue;
-                            }
-                            shown += 1;
-                            if message_row(ui, m, self.selected == Some(i)).clicked() {
-                                to_open = Some(i);
-                            }
+                let visible = self.visible_indices();
+                if visible.is_empty() {
+                    ui.add_space(48.0);
+                    ui.vertical_centered(|ui| {
+                        icons::show(ui, Icon::Inbox, 40.0);
+                        ui.label(RichText::new("No messages").color(MUTED));
+                        ui.label(
+                            RichText::new("Pick a station, a folder, or press Receive.")
+                                .small()
+                                .color(MUTED),
+                        );
+                    });
+                    return;
+                }
+
+                let clicked: Cell<Option<usize>> = Cell::new(None);
+                let sort_click: Cell<Option<SortKey>> = Cell::new(None);
+                let arrow = |k: SortKey| -> &'static str {
+                    if self.sort_key == k {
+                        if self.sort_asc {
+                            " ▲"
+                        } else {
+                            " ▼"
                         }
-                        if shown == 0 && self.inflight == 0 {
-                            ui.add_space(40.0);
-                            ui.vertical_centered(|ui| {
-                                icons::show(ui, Icon::Inbox, 40.0);
-                                ui.label(RichText::new("No messages").color(MUTED));
+                    } else {
+                        ""
+                    }
+                };
+
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .sense(egui::Sense::click())
+                    .cell_layout(Layout::left_to_right(Align::Center))
+                    .column(Column::exact(34.0))
+                    .column(Column::remainder().at_least(180.0).clip(true))
+                    .column(Column::initial(180.0).at_least(90.0).clip(true))
+                    .column(Column::initial(126.0).at_least(90.0))
+                    .column(Column::initial(70.0).at_least(50.0))
+                    .header(24.0, |mut header| {
+                        header.col(|_ui| {});
+                        header.col(|ui| {
+                            if ui
+                                .button(
+                                    RichText::new(format!("Subject{}", arrow(SortKey::Subject)))
+                                        .strong(),
+                                )
+                                .clicked()
+                            {
+                                sort_click.set(Some(SortKey::Subject));
+                            }
+                        });
+                        header.col(|ui| {
+                            if ui
+                                .button(
+                                    RichText::new(format!("Partner{}", arrow(SortKey::Partner)))
+                                        .strong(),
+                                )
+                                .clicked()
+                            {
+                                sort_click.set(Some(SortKey::Partner));
+                            }
+                        });
+                        header.col(|ui| {
+                            if ui
+                                .button(
+                                    RichText::new(format!("Date{}", arrow(SortKey::Date))).strong(),
+                                )
+                                .clicked()
+                            {
+                                sort_click.set(Some(SortKey::Date));
+                            }
+                        });
+                        header.col(|ui| {
+                            if ui
+                                .button(
+                                    RichText::new(format!("MDN{}", arrow(SortKey::Mdn))).strong(),
+                                )
+                                .clicked()
+                            {
+                                sort_click.set(Some(SortKey::Mdn));
+                            }
+                        });
+                    })
+                    .body(|body| {
+                        body.rows(28.0, visible.len(), |mut row| {
+                            let i = visible[row.index()];
+                            let m = &self.messages[i];
+                            row.set_selected(self.selected == Some(i));
+                            let incoming = bool_dir(m);
+                            row.col(|ui| {
+                                icons::show(ui, if incoming { Icon::In } else { Icon::Out }, 20.0);
+                            });
+                            row.col(|ui| {
+                                ui.label(sfield(m, &["subject", "asunto"]));
+                            });
+                            row.col(|ui| {
+                                ui.label(sfield(m, &["partner_name", "socio_nombre"]));
+                            });
+                            row.col(|ui| {
                                 ui.label(
-                                    RichText::new("Use Receive, or pick another station.")
-                                        .small()
+                                    RichText::new(short_date(&sfield(m, &["date", "fecha"])))
                                         .color(MUTED),
                                 );
                             });
-                        }
+                            row.col(|ui| {
+                                let mdn = sfield(m, &["mdn"]);
+                                if !mdn.is_empty() {
+                                    let ok = mdn.eq_ignore_ascii_case("ok");
+                                    ui.colored_label(if ok { OK_GREEN } else { DANGER }, mdn);
+                                }
+                            });
+                            if row.response().clicked() {
+                                clicked.set(Some(i));
+                            }
+                        });
                     });
-                if let Some(i) = to_open {
+
+                if let Some(k) = sort_click.get() {
+                    self.set_sort(k);
+                }
+                if let Some(i) = clicked.get() {
                     self.open_message(i);
                 }
             });
@@ -756,11 +1019,7 @@ impl App {
                     }
                 };
 
-                let incoming = m
-                    .get("incoming")
-                    .or_else(|| m.get("entrante"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let incoming = bool_dir(&m);
                 ui.horizontal(|ui| {
                     icons::show(ui, if incoming { Icon::In } else { Icon::Out }, 26.0);
                     ui.label(
@@ -814,7 +1073,7 @@ impl App {
                     if icons::labeled_button(ui, Icon::Unread, 16.0, "Mark unread").clicked() {
                         self.message_action("mark-unread", "Mark unread");
                     }
-                    if icons::labeled_button(ui, Icon::Save, 16.0, "Save payload").clicked() {
+                    if icons::labeled_button(ui, Icon::Save, 16.0, "Download…").clicked() {
                         self.save_payload();
                     }
                     if icons::labeled_button(ui, Icon::Delete, 16.0, "Delete").clicked() {
@@ -857,7 +1116,7 @@ impl App {
             .open(&mut open)
             .resizable(true)
             .collapsible(false)
-            .default_width(480.0)
+            .default_width(500.0)
             .show(ctx, |ui| {
                 egui::Grid::new("compose")
                     .num_columns(2)
@@ -871,7 +1130,7 @@ impl App {
                             .unwrap_or_else(|| "— pick a partner —".into());
                         egui::ComboBox::from_id_salt("partner")
                             .selected_text(current)
-                            .width(320.0)
+                            .width(340.0)
                             .show_ui(ui, |ui| {
                                 for (i, p) in self.partners.iter().enumerate() {
                                     ui.selectable_value(
@@ -887,16 +1146,26 @@ impl App {
                         ui.add(
                             egui::TextEdit::singleline(&mut self.compose_subject)
                                 .hint_text("(defaults to the file name)")
-                                .desired_width(320.0),
+                                .desired_width(340.0),
                         );
                         ui.end_row();
 
                         label_with_icon(ui, Icon::Attach, "File");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.compose_file)
-                                .hint_text("path to the EDI file — or drag one onto the window")
-                                .desired_width(320.0),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.compose_file)
+                                    .hint_text("choose or drag a file")
+                                    .desired_width(258.0),
+                            );
+                            if ui.button("Browse…").clicked() {
+                                if let Some(p) = rfd::FileDialog::new()
+                                    .set_title("Choose a file to send")
+                                    .pick_file()
+                                {
+                                    self.compose_file = p.display().to_string();
+                                }
+                            }
+                        });
                         ui.end_row();
                     });
 
@@ -971,16 +1240,15 @@ fn apply_theme(ctx: &egui::Context) {
 
 // --- Row widgets -------------------------------------------------------------
 
-/// A station/folder entry in the left sidebar. Returns its click response.
-fn station_row(
+/// A folder-tree entry: icon, name, and an optional count badge on the right.
+fn tree_row(
     ui: &mut egui::Ui,
     icon: Icon,
     name: &str,
-    sub: &str,
+    count: Option<usize>,
     selected: bool,
 ) -> egui::Response {
-    let two_line = !sub.is_empty();
-    let height = if two_line { 42.0 } else { 30.0 };
+    let height = 30.0;
     let (rect, resp) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), height),
         egui::Sense::click(),
@@ -998,121 +1266,22 @@ fn station_row(
         Vec2::splat(18.0),
     );
     icons::image(icon, 18.0).paint_at(ui, icon_rect);
-    let tx = icon_rect.right() + 8.0;
-    let p = ui.painter();
     let name_color = if selected { ACCENT } else { TEXT };
-    if two_line {
-        p.text(
-            egui::pos2(tx, rect.top() + 6.0),
-            Align2::LEFT_TOP,
-            trunc(name, 26),
-            FontId::proportional(13.0),
-            name_color,
-        );
-        p.text(
-            egui::pos2(tx, rect.top() + 23.0),
-            Align2::LEFT_TOP,
-            trunc(sub, 28),
-            FontId::proportional(11.0),
-            MUTED,
-        );
-    } else {
-        p.text(
-            egui::pos2(tx, rect.center().y),
-            Align2::LEFT_CENTER,
-            name,
-            FontId::proportional(13.5),
-            name_color,
-        );
-    }
-    resp
-}
-
-/// An Outlook-style message row. Returns its click response.
-fn message_row(ui: &mut egui::Ui, m: &Value, selected: bool) -> egui::Response {
-    let height = 50.0;
-    let (rect, resp) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), height),
-        egui::Sense::click(),
-    );
-    let bg = if selected {
-        ACCENT_SOFT
-    } else if resp.hovered() {
-        HOVER_SOFT
-    } else {
-        CARD
-    };
-    ui.painter().rect_filled(rect, 0.0, bg);
-    // left accent bar when selected
-    if selected {
-        ui.painter().rect_filled(
-            Rect::from_min_size(rect.left_top(), Vec2::new(3.0, rect.height())),
-            0.0,
-            ACCENT,
-        );
-    }
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom(),
-        Stroke::new(1.0, Color32::from_rgb(0xEF, 0xF0, 0xF2)),
-    );
-
-    let incoming = m
-        .get("incoming")
-        .or_else(|| m.get("entrante"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let icon_rect = Rect::from_min_size(
-        egui::pos2(rect.left() + 12.0, rect.center().y - 12.0),
-        Vec2::splat(24.0),
-    );
-    icons::image(if incoming { Icon::In } else { Icon::Out }, 24.0).paint_at(ui, icon_rect);
-
-    let subject = sfield(m, &["subject", "asunto"]);
-    let partner = sfield(m, &["partner_name", "socio_nombre"]);
-    let folder = sfield(m, &["folder_name"]);
-    let mdn = sfield(m, &["mdn"]);
-    let date = short_date(&sfield(m, &["date", "fecha"]));
-
-    let tx = icon_rect.right() + 10.0;
     let p = ui.painter();
-    let subj = if subject.is_empty() {
-        "(no subject)".to_string()
-    } else {
-        subject
-    };
     p.text(
-        egui::pos2(tx, rect.top() + 9.0),
-        Align2::LEFT_TOP,
-        trunc(&subj, 52),
-        FontId::proportional(14.0),
-        TEXT,
+        egui::pos2(icon_rect.right() + 8.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        trunc(name, 22),
+        FontId::proportional(13.5),
+        name_color,
     );
-    let meta = format!("{}  ·  {}", trunc(&partner, 34), folder);
-    p.text(
-        egui::pos2(tx, rect.top() + 28.0),
-        Align2::LEFT_TOP,
-        meta,
-        FontId::proportional(11.5),
-        MUTED,
-    );
-
-    // right column: date + MDN status
-    p.text(
-        egui::pos2(rect.right() - 12.0, rect.top() + 9.0),
-        Align2::RIGHT_TOP,
-        date,
-        FontId::proportional(11.5),
-        MUTED,
-    );
-    if !mdn.is_empty() {
-        let ok = mdn.eq_ignore_ascii_case("ok");
+    if let Some(c) = count {
         p.text(
-            egui::pos2(rect.right() - 12.0, rect.top() + 27.0),
-            Align2::RIGHT_TOP,
-            format!("MDN {mdn}"),
-            FontId::proportional(11.0),
-            if ok { OK_GREEN } else { DANGER },
+            egui::pos2(rect.right() - 8.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            c.to_string(),
+            FontId::proportional(11.5),
+            MUTED,
         );
     }
     resp
@@ -1137,6 +1306,13 @@ fn label_with_icon(ui: &mut egui::Ui, icon: Icon, text: &str) {
 }
 
 // --- helpers -----------------------------------------------------------------
+
+fn bool_dir(m: &Value) -> bool {
+    m.get("incoming")
+        .or_else(|| m.get("entrante"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
 
 /// Return the first present, non-empty string among `keys`.
 fn sfield(v: &Value, keys: &[&str]) -> String {
