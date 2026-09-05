@@ -92,6 +92,8 @@ enum NewKind {
 /// Backing state for the create forms.
 struct Forms {
     open: Option<NewKind>,
+    /// Set when the form is editing an existing record (its id); None = create.
+    edit_id: Option<Value>,
     busy: bool,
     // Station
     st_name: String,
@@ -121,6 +123,7 @@ impl Default for Forms {
     fn default() -> Self {
         Forms {
             open: None,
+            edit_id: None,
             busy: false,
             st_name: String::new(),
             st_as2: String::new(),
@@ -175,6 +178,7 @@ pub struct App {
     maint_detail: Option<Value>,
     maint_search: String,
     forms: Forms,
+    confirm_delete: Option<Value>,
 
     // UI
     search: String,
@@ -228,6 +232,7 @@ impl App {
             maint_detail: None,
             maint_search: String::new(),
             forms: Forms::default(),
+            confirm_delete: None,
             search: String::new(),
             sort_key: SortKey::Date,
             sort_asc: false,
@@ -326,17 +331,60 @@ impl App {
         }
     }
 
+    fn begin_edit(&mut self, kind: NewKind, item: &Value) {
+        self.forms = Forms::default();
+        self.forms.open = Some(kind);
+        self.forms.edit_id = item.get("id").cloned();
+        match kind {
+            NewKind::Station => {
+                self.forms.st_name = sfield(item, &["name", "nombre"]);
+                self.forms.st_as2 = sfield(item, &["as2_id", "as2id"]);
+                self.forms.st_email = sfield(item, &["email"]);
+            }
+            NewKind::Partner => {
+                self.forms.pt_name = sfield(item, &["name", "nombre"]);
+                self.forms.pt_as2 = sfield(item, &["as2_id", "as2id"]);
+                self.forms.pt_email = sfield(item, &["email"]);
+                self.forms.pt_url = sfield(item, &["url"]);
+            }
+            NewKind::Certificate => {}
+        }
+    }
+
+    fn do_delete(&mut self, id: Value) {
+        let Some(c) = self.client.clone() else { return };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let view = self.view;
+        self.inflight += 1;
+        self.rt.spawn(async move {
+            let r = match view {
+                View::Partners => c.partners.delete(id).await,
+                _ => c.stations.delete(id).await,
+            };
+            let _ = tx.send(Event::Created {
+                label: "Deleted".into(),
+                res: r,
+            });
+            ctx.request_repaint();
+        });
+    }
+
     fn submit_create(&mut self) {
         let Some(kind) = self.forms.open else { return };
         let Some(c) = self.client.clone() else { return };
-        let (body, label): (Value, &'static str) = match kind {
+        let editing = self.forms.edit_id.clone();
+        let (mut body, label): (Value, &'static str) = match kind {
             NewKind::Station => (
                 json!({
                     "name": self.forms.st_name.trim(),
                     "as2_id": self.forms.st_as2.trim(),
                     "email": self.forms.st_email.trim(),
                 }),
-                "Station created",
+                if editing.is_some() {
+                    "Station updated"
+                } else {
+                    "Station created"
+                },
             ),
             NewKind::Partner => {
                 let station_id = self
@@ -353,7 +401,11 @@ impl App {
                         "email": self.forms.pt_email.trim(),
                         "url": self.forms.pt_url.trim(),
                     }),
-                    "Partner created",
+                    if editing.is_some() {
+                        "Partner updated"
+                    } else {
+                        "Partner created"
+                    },
                 )
             }
             NewKind::Certificate => {
@@ -382,14 +434,22 @@ impl App {
                 )
             }
         };
+        // In edit mode, add the id and route to the update endpoint.
+        if let Some(id) = editing.clone() {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("id".into(), id);
+            }
+        }
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         self.forms.busy = true;
         self.inflight += 1;
         self.rt.spawn(async move {
-            let r = match kind {
-                NewKind::Station => c.stations.create(body).await,
-                NewKind::Partner => c.partners.create(body).await,
-                NewKind::Certificate => c.certificates.create(body).await,
+            let r = match (kind, editing.is_some()) {
+                (NewKind::Station, false) => c.stations.create(body).await,
+                (NewKind::Station, true) => c.stations.update(body).await,
+                (NewKind::Partner, false) => c.partners.create(body).await,
+                (NewKind::Partner, true) => c.partners.update(body).await,
+                (NewKind::Certificate, _) => c.certificates.create(body).await,
             };
             let _ = tx.send(Event::Created {
                 label: label.into(),
@@ -803,6 +863,8 @@ impl App {
                     match res {
                         Ok(_) => {
                             self.forms = Forms::default();
+                            self.maint_sel = None;
+                            self.maint_detail = None;
                             self.status = format!("{label} ✓");
                             self.refresh_view();
                         }
@@ -1029,6 +1091,51 @@ impl App {
         if self.forms.open.is_some() {
             self.ui_create(ctx);
         }
+        if self.confirm_delete.is_some() {
+            self.ui_confirm_delete(ctx);
+        }
+    }
+
+    fn ui_confirm_delete(&mut self, ctx: &egui::Context) {
+        let mut do_it = false;
+        let mut cancel = false;
+        egui::Window::new(RichText::new("  Confirm delete").strong())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    icons::show(ui, Icon::Warning, 20.0);
+                    ui.label("This action cannot be undone. Delete the selected item?");
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::image_and_text(
+                                icons::image(Icon::Delete, 16.0),
+                                RichText::new("Delete").strong(),
+                            )
+                            .fill(DANGER),
+                        )
+                        .clicked()
+                    {
+                        do_it = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if do_it {
+            if let Some(id) = self.confirm_delete.take() {
+                self.do_delete(id);
+                self.maint_sel = None;
+                self.maint_detail = None;
+            }
+        } else if cancel {
+            self.confirm_delete = None;
+        }
     }
 
     fn ui_maint_toolbar(&mut self, ctx: &egui::Context) {
@@ -1203,6 +1310,28 @@ impl App {
                     });
                 });
                 ui.separator();
+                // Edit / Delete are available for stations and partners.
+                if matches!(self.view, View::Stations | View::Partners) {
+                    if let Some(item) = self.maint_detail.clone() {
+                        let kind = if self.view == View::Partners {
+                            NewKind::Partner
+                        } else {
+                            NewKind::Station
+                        };
+                        ui.horizontal(|ui| {
+                            if icons::labeled_button(ui, Icon::Add, 16.0, "Edit").clicked() {
+                                if self.stations.is_empty() {
+                                    self.load_stations();
+                                }
+                                self.begin_edit(kind, &item);
+                            }
+                            if icons::labeled_button(ui, Icon::Delete, 16.0, "Delete").clicked() {
+                                self.confirm_delete = item.get("id").cloned();
+                            }
+                        });
+                        ui.separator();
+                    }
+                }
                 match self.maint_detail.clone() {
                     None => {
                         ui.horizontal(|ui| {
@@ -1235,10 +1364,13 @@ impl App {
 
     fn ui_create(&mut self, ctx: &egui::Context) {
         let Some(kind) = self.forms.open else { return };
-        let title = match kind {
-            NewKind::Station => "New station",
-            NewKind::Partner => "New partner",
-            NewKind::Certificate => "New certificate (self-signed)",
+        let editing = self.forms.edit_id.is_some();
+        let title = match (kind, editing) {
+            (NewKind::Station, false) => "New station",
+            (NewKind::Station, true) => "Edit station",
+            (NewKind::Partner, false) => "New partner",
+            (NewKind::Partner, true) => "Edit partner",
+            (NewKind::Certificate, _) => "New certificate (self-signed)",
         };
         let mut open = true;
         let mut submit = false;
@@ -1258,7 +1390,9 @@ impl App {
                             field(ui, "Email", &mut self.forms.st_email);
                         }
                         NewKind::Partner => {
-                            station_combo(ui, &self.stations, &mut self.forms.pt_station);
+                            if !editing {
+                                station_combo(ui, &self.stations, &mut self.forms.pt_station);
+                            }
                             field(ui, "Name", &mut self.forms.pt_name);
                             field(ui, "AS2 ID", &mut self.forms.pt_as2);
                             field(ui, "Email", &mut self.forms.pt_email);
@@ -1286,7 +1420,7 @@ impl App {
                         !busy,
                         egui::Button::image_and_text(
                             icons::image(Icon::Add, 16.0),
-                            RichText::new("Create").strong(),
+                            RichText::new(if editing { "Update" } else { "Create" }).strong(),
                         )
                         .fill(ACCENT),
                     );

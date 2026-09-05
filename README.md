@@ -24,9 +24,11 @@ stack**. Every API call goes through the official
   you choose** (native save dialog).
 - Compose and send a new message to a trading partner — **Browse** for the file
   (native open dialog) or drag it onto the window.
-- **Maintenance modules** (left nav rail): browse and create **stations**,
-  **partners** and **certificates** (self-signed) — each with a searchable grid,
-  a detail pane, and a create form driven entirely by the API.
+- **Maintenance modules** (left nav rail): manage **stations**, **partners** and
+  **certificates** — each with a searchable grid, a detail pane, and forms driven
+  entirely by the API. Stations and partners support create, **edit** and
+  **delete** (with confirmation); certificates support create (self-signed) and
+  view.
 - All work runs off the UI thread; the window stays responsive.
 
 ## Install

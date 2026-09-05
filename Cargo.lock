@@ -103,7 +103,7 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 [[package]]
 name = "as2expert"
 version = "0.1.0"
-source = "git+https://github.com/as2expert/as2expert-rust?branch=main#177acaf491c89459ea595bf1ce3fbd77e2993e69"
+source = "git+https://github.com/as2expert/as2expert-rust?branch=main#d8d49fca1ce6b0ff85c217e3ef412b1c44b06451"
 dependencies = [
  "base64",
  "hex",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "as2expert-desktop"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "as2expert",
  "eframe",
@@ -804,7 +804,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2388,7 +2388,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2597,7 +2597,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2877,7 +2877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3691,7 +3691,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

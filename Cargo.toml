@@ -1,6 +1,6 @@
 [package]
 name = "as2expert-desktop"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.76"
 description = "Native cross-platform desktop client for AS2Expert — read, organize, send and receive AS2/EDI messages."
