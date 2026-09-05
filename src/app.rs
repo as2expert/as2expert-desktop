@@ -105,6 +105,26 @@ struct Forms {
     pt_as2: String,
     pt_email: String,
     pt_url: String,
+    // Partner — inbound auth
+    pt_auth: bool,
+    pt_auth_user: String,
+    pt_auth_pass: String,
+    pt_firewall: bool,
+    // Partner — FTP delivery
+    pt_ftp_active: bool,
+    pt_ftp_type: String,
+    pt_ftp_host: String,
+    pt_ftp_port: String,
+    pt_ftp_user: String,
+    pt_ftp_pass: String,
+    pt_ftp_path: String,
+    pt_ftp_passive: bool,
+    pt_ftp_email: String,
+    // Partner — webhook
+    pt_wh_active: bool,
+    pt_wh_url: String,
+    pt_wh_secret: String,
+    pt_wh_email: String,
     // Certificate (self-signed)
     ct_station: usize,
     ct_cn: String,
@@ -133,6 +153,23 @@ impl Default for Forms {
             pt_as2: String::new(),
             pt_email: String::new(),
             pt_url: String::new(),
+            pt_auth: false,
+            pt_auth_user: String::new(),
+            pt_auth_pass: String::new(),
+            pt_firewall: false,
+            pt_ftp_active: false,
+            pt_ftp_type: "sftp".into(),
+            pt_ftp_host: String::new(),
+            pt_ftp_port: "22".into(),
+            pt_ftp_user: String::new(),
+            pt_ftp_pass: String::new(),
+            pt_ftp_path: String::new(),
+            pt_ftp_passive: true,
+            pt_ftp_email: String::new(),
+            pt_wh_active: false,
+            pt_wh_url: String::new(),
+            pt_wh_secret: String::new(),
+            pt_wh_email: String::new(),
             ct_station: 0,
             ct_cn: String::new(),
             ct_email: String::new(),
@@ -347,10 +384,29 @@ impl App {
                 self.forms.st_email = sfield(item, &["email"]);
             }
             NewKind::Partner => {
-                self.forms.pt_name = sfield(item, &["name", "nombre"]);
-                self.forms.pt_as2 = sfield(item, &["as2_id", "as2id"]);
-                self.forms.pt_email = sfield(item, &["email"]);
-                self.forms.pt_url = sfield(item, &["url"]);
+                let f = &mut self.forms;
+                f.pt_name = sfield(item, &["name", "nombre"]);
+                f.pt_as2 = sfield(item, &["as2_id", "as2id"]);
+                f.pt_email = sfield(item, &["email"]);
+                f.pt_url = sfield(item, &["url"]);
+                f.pt_auth = jbool(item, "auth");
+                f.pt_auth_user = sfield(item, &["auth_usuario", "auth_user"]);
+                f.pt_firewall = jbool(item, "firewall");
+                f.pt_ftp_active = jbool(item, "ftp_activo");
+                f.pt_ftp_type = or_default(sfield(item, &["ftp_tipo"]), "sftp");
+                f.pt_ftp_host = sfield(item, &["ftp_host"]);
+                f.pt_ftp_port = or_default(sfield(item, &["ftp_port"]), "22");
+                f.pt_ftp_user = sfield(item, &["ftp_user"]);
+                f.pt_ftp_path = sfield(item, &["ftp_path"]);
+                f.pt_ftp_passive = item
+                    .get("ftp_passive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                f.pt_ftp_email = sfield(item, &["ftp_email"]);
+                f.pt_wh_active = jbool(item, "webhook_activo");
+                f.pt_wh_url = sfield(item, &["webhook_url"]);
+                f.pt_wh_email = sfield(item, &["webhook_email"]);
+                // Secrets stay blank — leaving them blank keeps the stored value.
             }
             NewKind::Certificate => {}
         }
@@ -398,13 +454,31 @@ impl App {
                     .and_then(|s| s.get("id"))
                     .cloned()
                     .unwrap_or(Value::Null);
+                let f = &self.forms;
                 (
                     json!({
                         "station": station_id,
-                        "name": self.forms.pt_name.trim(),
-                        "as2_id": self.forms.pt_as2.trim(),
-                        "email": self.forms.pt_email.trim(),
-                        "url": self.forms.pt_url.trim(),
+                        "name": f.pt_name.trim(),
+                        "as2_id": f.pt_as2.trim(),
+                        "email": f.pt_email.trim(),
+                        "url": f.pt_url.trim(),
+                        "auth": f.pt_auth,
+                        "auth_user": f.pt_auth_user.trim(),
+                        "auth_password": f.pt_auth_pass,
+                        "firewall": f.pt_firewall,
+                        "ftp_enabled": f.pt_ftp_active,
+                        "ftp_type": f.pt_ftp_type.trim(),
+                        "ftp_host": f.pt_ftp_host.trim(),
+                        "ftp_port": f.pt_ftp_port.trim().parse::<i64>().unwrap_or(22),
+                        "ftp_user": f.pt_ftp_user.trim(),
+                        "ftp_pass": f.pt_ftp_pass,
+                        "ftp_path": f.pt_ftp_path.trim(),
+                        "ftp_passive": f.pt_ftp_passive,
+                        "ftp_email": f.pt_ftp_email.trim(),
+                        "webhook_enabled": f.pt_wh_active,
+                        "webhook_url": f.pt_wh_url.trim(),
+                        "webhook_secret": f.pt_wh_secret,
+                        "webhook_email": f.pt_wh_email.trim(),
                     }),
                     if editing.is_some() {
                         "Partner updated"
@@ -1408,36 +1482,37 @@ impl App {
             .resizable(true)
             .default_width(460.0)
             .show(ctx, |ui| {
-                egui::Grid::new("create_grid")
-                    .num_columns(2)
-                    .spacing([10.0, 8.0])
+                egui::ScrollArea::vertical()
+                    .max_height(460.0)
                     .show(ui, |ui| match kind {
                         NewKind::Station => {
-                            field(ui, "Name", &mut self.forms.st_name);
-                            field(ui, "AS2 ID", &mut self.forms.st_as2);
-                            field(ui, "Email", &mut self.forms.st_email);
+                            egui::Grid::new("f_station")
+                                .num_columns(2)
+                                .spacing([10.0, 8.0])
+                                .show(ui, |ui| {
+                                    field(ui, "Name", &mut self.forms.st_name);
+                                    field(ui, "AS2 ID", &mut self.forms.st_as2);
+                                    field(ui, "Email", &mut self.forms.st_email);
+                                });
                         }
-                        NewKind::Partner => {
-                            if !editing {
-                                station_combo(ui, &self.stations, &mut self.forms.pt_station);
-                            }
-                            field(ui, "Name", &mut self.forms.pt_name);
-                            field(ui, "AS2 ID", &mut self.forms.pt_as2);
-                            field(ui, "Email", &mut self.forms.pt_email);
-                            field(ui, "Endpoint URL", &mut self.forms.pt_url);
-                        }
+                        NewKind::Partner => self.ui_partner_form(ui, editing),
                         NewKind::Certificate => {
-                            station_combo(ui, &self.stations, &mut self.forms.ct_station);
-                            field(ui, "Common name", &mut self.forms.ct_cn);
-                            field(ui, "Email", &mut self.forms.ct_email);
-                            field(ui, "Country", &mut self.forms.ct_country);
-                            field(ui, "Locality", &mut self.forms.ct_locality);
-                            field(ui, "Province", &mut self.forms.ct_province);
-                            field(ui, "Organization", &mut self.forms.ct_org);
-                            field(ui, "Org. unit", &mut self.forms.ct_orgunit);
-                            field(ui, "Days", &mut self.forms.ct_days);
-                            field(ui, "Key bits", &mut self.forms.ct_keybits);
-                            field(ui, "Hash", &mut self.forms.ct_hash);
+                            egui::Grid::new("f_cert")
+                                .num_columns(2)
+                                .spacing([10.0, 8.0])
+                                .show(ui, |ui| {
+                                    station_combo(ui, &self.stations, &mut self.forms.ct_station);
+                                    field(ui, "Common name", &mut self.forms.ct_cn);
+                                    field(ui, "Email", &mut self.forms.ct_email);
+                                    field(ui, "Country", &mut self.forms.ct_country);
+                                    field(ui, "Locality", &mut self.forms.ct_locality);
+                                    field(ui, "Province", &mut self.forms.ct_province);
+                                    field(ui, "Organization", &mut self.forms.ct_org);
+                                    field(ui, "Org. unit", &mut self.forms.ct_orgunit);
+                                    field(ui, "Days", &mut self.forms.ct_days);
+                                    field(ui, "Key bits", &mut self.forms.ct_keybits);
+                                    field(ui, "Hash", &mut self.forms.ct_hash);
+                                });
                         }
                     });
 
@@ -1466,6 +1541,61 @@ impl App {
         if !open && !self.forms.busy {
             self.forms.open = None;
         }
+    }
+
+    /// The full partner create/edit form: identity + auth + FTP + webhook.
+    fn ui_partner_form(&mut self, ui: &mut egui::Ui, editing: bool) {
+        let f = &mut self.forms;
+        egui::Grid::new("f_p_id")
+            .num_columns(2)
+            .spacing([10.0, 8.0])
+            .show(ui, |ui| {
+                if !editing {
+                    station_combo(ui, &self.stations, &mut f.pt_station);
+                }
+                field(ui, "Name", &mut f.pt_name);
+                field(ui, "AS2 ID", &mut f.pt_as2);
+                field(ui, "Email", &mut f.pt_email);
+                field(ui, "Endpoint URL", &mut f.pt_url);
+            });
+
+        form_section(ui, "Inbound authentication");
+        egui::Grid::new("f_p_auth")
+            .num_columns(2)
+            .spacing([10.0, 8.0])
+            .show(ui, |ui| {
+                check_row(ui, "Require auth", &mut f.pt_auth);
+                field(ui, "User", &mut f.pt_auth_user);
+                secret_field(ui, "Password", &mut f.pt_auth_pass);
+                check_row(ui, "Firewall", &mut f.pt_firewall);
+            });
+
+        form_section(ui, "FTP / SFTP delivery");
+        egui::Grid::new("f_p_ftp")
+            .num_columns(2)
+            .spacing([10.0, 8.0])
+            .show(ui, |ui| {
+                check_row(ui, "Enabled", &mut f.pt_ftp_active);
+                field(ui, "Type (sftp/ftp)", &mut f.pt_ftp_type);
+                field(ui, "Host", &mut f.pt_ftp_host);
+                field(ui, "Port", &mut f.pt_ftp_port);
+                field(ui, "User", &mut f.pt_ftp_user);
+                secret_field(ui, "Password", &mut f.pt_ftp_pass);
+                field(ui, "Path", &mut f.pt_ftp_path);
+                check_row(ui, "Passive", &mut f.pt_ftp_passive);
+                field(ui, "Notify email", &mut f.pt_ftp_email);
+            });
+
+        form_section(ui, "Webhook");
+        egui::Grid::new("f_p_wh")
+            .num_columns(2)
+            .spacing([10.0, 8.0])
+            .show(ui, |ui| {
+                check_row(ui, "Enabled", &mut f.pt_wh_active);
+                field(ui, "URL", &mut f.pt_wh_url);
+                secret_field(ui, "Secret", &mut f.pt_wh_secret);
+                field(ui, "Notify email", &mut f.pt_wh_email);
+            });
     }
 
     /// Index of the active station within `self.stations`, if any.
@@ -2168,6 +2298,31 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.end_row();
 }
 
+/// A labelled password field; the hint reminds that blank keeps the stored value.
+fn secret_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.label(RichText::new(label).color(MUTED));
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .password(true)
+            .hint_text("leave blank to keep")
+            .desired_width(300.0),
+    );
+    ui.end_row();
+}
+
+/// A labelled checkbox row inside a form Grid.
+fn check_row(ui: &mut egui::Ui, label: &str, value: &mut bool) {
+    ui.label(RichText::new(label).color(MUTED));
+    ui.checkbox(value, "");
+    ui.end_row();
+}
+
+/// A section heading inside the create/edit form.
+fn form_section(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(text).strong().color(ACCENT));
+}
+
 /// A toolbar station picker (real stations only, no "all"). Returns true when
 /// the selection changed. Messages and partners are always scoped to a station.
 fn station_picker(ui: &mut egui::Ui, stations: &[Value], selected: &mut Option<i64>) -> bool {
@@ -2260,6 +2415,18 @@ fn folder_from(v: &Value) -> Folder {
         name: sfield(v, &["name", "nombre"]),
         parent: v.get("parent_id").and_then(|x| x.as_i64()),
         count: v.get("count").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+    }
+}
+
+fn jbool(v: &Value, key: &str) -> bool {
+    v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
+}
+
+fn or_default(s: String, default: &str) -> String {
+    if s.is_empty() {
+        default.to_string()
+    } else {
+        s
     }
 }
 

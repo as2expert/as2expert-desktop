@@ -30,7 +30,9 @@ stack**. Every API call goes through the official
   **certificates** — each with a searchable grid, a detail pane, and forms driven
   entirely by the API. Stations and partners support create, **edit** and
   **delete** (with confirmation); certificates support create (self-signed) and
-  view.
+  view. Partners expose their **full configuration** — identity, inbound auth,
+  FTP/SFTP delivery and webhook — in the detail and edit form (secrets are
+  write-only: leave blank to keep the stored value).
 - All work runs off the UI thread; the window stays responsive.
 
 ## Install
