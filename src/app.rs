@@ -53,6 +53,12 @@ enum Event {
     Opened(as2expert::Result<Value>),
     Body(as2expert::Result<Vec<u8>>),
     Partners(as2expert::Result<Vec<Value>>),
+    Certificates(as2expert::Result<Vec<Value>>),
+    MaintDetail(as2expert::Result<Value>),
+    Created {
+        label: String,
+        res: as2expert::Result<Value>,
+    },
     Sent(as2expert::Result<Value>),
     Acted {
         label: String,
@@ -64,6 +70,79 @@ enum Event {
 enum Screen {
     Login,
     Main,
+}
+
+/// Top-level modules, switched from the left nav rail.
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    Mail,
+    Stations,
+    Partners,
+    Certificates,
+}
+
+/// Which "New …" form is open.
+#[derive(Clone, Copy, PartialEq)]
+enum NewKind {
+    Station,
+    Partner,
+    Certificate,
+}
+
+/// Backing state for the create forms.
+struct Forms {
+    open: Option<NewKind>,
+    busy: bool,
+    // Station
+    st_name: String,
+    st_as2: String,
+    st_email: String,
+    // Partner
+    pt_station: usize,
+    pt_name: String,
+    pt_as2: String,
+    pt_email: String,
+    pt_url: String,
+    // Certificate (self-signed)
+    ct_station: usize,
+    ct_cn: String,
+    ct_email: String,
+    ct_country: String,
+    ct_locality: String,
+    ct_province: String,
+    ct_org: String,
+    ct_orgunit: String,
+    ct_days: String,
+    ct_keybits: String,
+    ct_hash: String,
+}
+
+impl Default for Forms {
+    fn default() -> Self {
+        Forms {
+            open: None,
+            busy: false,
+            st_name: String::new(),
+            st_as2: String::new(),
+            st_email: String::new(),
+            pt_station: 0,
+            pt_name: String::new(),
+            pt_as2: String::new(),
+            pt_email: String::new(),
+            pt_url: String::new(),
+            ct_station: 0,
+            ct_cn: String::new(),
+            ct_email: String::new(),
+            ct_country: "ES".into(),
+            ct_locality: "Madrid".into(),
+            ct_province: "Madrid".into(),
+            ct_org: String::new(),
+            ct_orgunit: "IT".into(),
+            ct_days: "365".into(),
+            ct_keybits: "2048".into(),
+            ct_hash: "sha256".into(),
+        }
+    }
 }
 
 pub struct App {
@@ -88,6 +167,14 @@ pub struct App {
     body_bytes: Option<Vec<u8>>,
     body_note: Option<String>,
     partners: Vec<Value>,
+
+    // Maintenance modules
+    view: View,
+    certificates: Vec<Value>,
+    maint_sel: Option<usize>,
+    maint_detail: Option<Value>,
+    maint_search: String,
+    forms: Forms,
 
     // UI
     search: String,
@@ -135,6 +222,12 @@ impl App {
             body_bytes: None,
             body_note: None,
             partners: Vec::new(),
+            view: View::Mail,
+            certificates: Vec::new(),
+            maint_sel: None,
+            maint_detail: None,
+            maint_search: String::new(),
+            forms: Forms::default(),
             search: String::new(),
             sort_key: SortKey::Date,
             sort_asc: false,
@@ -193,6 +286,115 @@ impl App {
         self.rt.spawn(async move {
             let r = c.partners.list(json!({})).await;
             let _ = tx.send(Event::Partners(r));
+            ctx.request_repaint();
+        });
+    }
+
+    fn load_certificates(&mut self) {
+        let Some(c) = self.client.clone() else { return };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.inflight += 1;
+        self.rt.spawn(async move {
+            let r = c.certificates.list().await;
+            let _ = tx.send(Event::Certificates(r));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Switch the active module, loading its data on demand.
+    fn set_view(&mut self, view: View) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.maint_sel = None;
+        self.maint_detail = None;
+        match view {
+            View::Stations if self.stations.is_empty() => self.load_stations(),
+            View::Partners if self.partners.is_empty() => self.load_partners(),
+            View::Certificates => self.load_certificates(),
+            _ => {}
+        }
+    }
+
+    fn refresh_view(&mut self) {
+        match self.view {
+            View::Mail => self.refresh_messages(),
+            View::Stations => self.load_stations(),
+            View::Partners => self.load_partners(),
+            View::Certificates => self.load_certificates(),
+        }
+    }
+
+    fn submit_create(&mut self) {
+        let Some(kind) = self.forms.open else { return };
+        let Some(c) = self.client.clone() else { return };
+        let (body, label): (Value, &'static str) = match kind {
+            NewKind::Station => (
+                json!({
+                    "name": self.forms.st_name.trim(),
+                    "as2_id": self.forms.st_as2.trim(),
+                    "email": self.forms.st_email.trim(),
+                }),
+                "Station created",
+            ),
+            NewKind::Partner => {
+                let station_id = self
+                    .stations
+                    .get(self.forms.pt_station)
+                    .and_then(|s| s.get("id"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                (
+                    json!({
+                        "station": station_id,
+                        "name": self.forms.pt_name.trim(),
+                        "as2_id": self.forms.pt_as2.trim(),
+                        "email": self.forms.pt_email.trim(),
+                        "url": self.forms.pt_url.trim(),
+                    }),
+                    "Partner created",
+                )
+            }
+            NewKind::Certificate => {
+                let station_id = self
+                    .stations
+                    .get(self.forms.ct_station)
+                    .and_then(|s| s.get("id"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                (
+                    json!({
+                        "self_signed": true,
+                        "station": station_id,
+                        "commonName": self.forms.ct_cn.trim(),
+                        "email": self.forms.ct_email.trim(),
+                        "countryName": self.forms.ct_country.trim(),
+                        "localityName": self.forms.ct_locality.trim(),
+                        "provinceName": self.forms.ct_province.trim(),
+                        "organization": self.forms.ct_org.trim(),
+                        "organizationUnitName": self.forms.ct_orgunit.trim(),
+                        "dias": self.forms.ct_days.trim().parse::<i64>().unwrap_or(365),
+                        "keybits": self.forms.ct_keybits.trim().parse::<i64>().unwrap_or(2048),
+                        "hash": self.forms.ct_hash.trim(),
+                    }),
+                    "Certificate created",
+                )
+            }
+        };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.forms.busy = true;
+        self.inflight += 1;
+        self.rt.spawn(async move {
+            let r = match kind {
+                NewKind::Station => c.stations.create(body).await,
+                NewKind::Partner => c.partners.create(body).await,
+                NewKind::Certificate => c.certificates.create(body).await,
+            };
+            let _ = tx.send(Event::Created {
+                label: label.into(),
+                res: r,
+            });
             ctx.request_repaint();
         });
     }
@@ -578,6 +780,35 @@ impl App {
                         self.partners = v;
                     }
                 }
+                Event::Certificates(r) => {
+                    self.inflight = self.inflight.saturating_sub(1);
+                    match r {
+                        Ok(v) => {
+                            self.status = format!("{} certificates", v.len());
+                            self.certificates = v;
+                        }
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
+                Event::MaintDetail(r) => {
+                    self.inflight = self.inflight.saturating_sub(1);
+                    match r {
+                        Ok(v) => self.maint_detail = Some(v),
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
+                Event::Created { label, res } => {
+                    self.inflight = self.inflight.saturating_sub(1);
+                    self.forms.busy = false;
+                    match res {
+                        Ok(_) => {
+                            self.forms = Forms::default();
+                            self.status = format!("{label} ✓");
+                            self.refresh_view();
+                        }
+                        Err(e) => self.error = Some(format!("{label} failed: {e}")),
+                    }
+                }
                 Event::Sent(r) => {
                     self.inflight = self.inflight.saturating_sub(1);
                     self.compose_sending = false;
@@ -739,6 +970,14 @@ impl App {
     }
 
     fn ui_main(&mut self, ctx: &egui::Context) {
+        self.ui_nav(ctx);
+        match self.view {
+            View::Mail => self.ui_mail(ctx),
+            _ => self.ui_maint(ctx),
+        }
+    }
+
+    fn ui_mail(&mut self, ctx: &egui::Context) {
         self.ui_toolbar(ctx);
         self.ui_statusbar(ctx);
         self.ui_folders(ctx);
@@ -749,6 +988,351 @@ impl App {
         if self.compose_open {
             self.ui_compose(ctx);
         }
+    }
+
+    /// Leftmost icon rail to switch modules.
+    fn ui_nav(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("nav")
+            .exact_width(72.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::default()
+                    .fill(Color32::from_rgb(0x1E, 0x2A, 0x38))
+                    .inner_margin(egui::Margin::symmetric(6.0, 10.0)),
+            )
+            .show(ctx, |ui| {
+                let mut go: Option<View> = None;
+                for (view, icon, label) in [
+                    (View::Mail, Icon::Message, "Mail"),
+                    (View::Stations, Icon::Station, "Stations"),
+                    (View::Partners, Icon::Partner, "Partners"),
+                    (View::Certificates, Icon::Certificate, "Certificates"),
+                ] {
+                    if nav_item(ui, icon, label, self.view == view) {
+                        go = Some(view);
+                    }
+                    ui.add_space(4.0);
+                }
+                if let Some(v) = go {
+                    self.set_view(v);
+                }
+            });
+    }
+
+    fn ui_maint(&mut self, ctx: &egui::Context) {
+        self.ui_maint_toolbar(ctx);
+        self.ui_statusbar(ctx);
+        if self.maint_sel.is_some() {
+            self.ui_maint_detail(ctx);
+        }
+        self.ui_maint_grid(ctx);
+        if self.forms.open.is_some() {
+            self.ui_create(ctx);
+        }
+    }
+
+    fn ui_maint_toolbar(&mut self, ctx: &egui::Context) {
+        let (title, new_label, new_kind) = match self.view {
+            View::Stations => ("Stations", "New station", NewKind::Station),
+            View::Partners => ("Partners", "New partner", NewKind::Partner),
+            View::Certificates => ("Certificates", "New certificate", NewKind::Certificate),
+            View::Mail => ("Mail", "New", NewKind::Station),
+        };
+        egui::TopBottomPanel::top("maint_toolbar")
+            .frame(
+                egui::Frame::default()
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(egui::Margin::symmetric(10.0, 7.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
+                    ui.add_space(8.0);
+                    if icons::labeled_button(ui, Icon::Add, 16.0, new_label).clicked() {
+                        if self.stations.is_empty() {
+                            self.load_stations();
+                        }
+                        self.forms = Forms::default();
+                        self.forms.open = Some(new_kind);
+                    }
+                    if icons::labeled_button(ui, Icon::Refresh, 16.0, "Refresh").clicked() {
+                        self.refresh_view();
+                    }
+                    ui.separator();
+                    icons::show(ui, Icon::Search, 16.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.maint_search)
+                            .hint_text("Search")
+                            .desired_width(220.0),
+                    );
+                    if !self.maint_search.is_empty() && ui.small_button("✕").clicked() {
+                        self.maint_search.clear();
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if self.inflight > 0 {
+                            ui.spinner();
+                        }
+                    });
+                });
+            });
+
+        if let Some(err) = self.error.clone() {
+            egui::TopBottomPanel::top("maint_err")
+                .frame(
+                    egui::Frame::default()
+                        .fill(Color32::from_rgb(0xFD, 0xEC, 0xEC))
+                        .inner_margin(egui::Margin::symmetric(10.0, 6.0)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        icons::show(ui, Icon::Warning, 16.0);
+                        ui.colored_label(DANGER, err);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                self.error = None;
+                            }
+                        });
+                    });
+                });
+        }
+    }
+
+    fn ui_maint_grid(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(CARD).inner_margin(0.0))
+            .show(ctx, |ui| {
+                let view = self.view;
+                let headers = maint_headers(view);
+                let needle = self.maint_search.to_lowercase();
+                let rows: Vec<(usize, Value, Vec<String>)> = self
+                    .current_maint_list()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        (
+                            i,
+                            v.get("id").cloned().unwrap_or(Value::Null),
+                            maint_cells(view, v),
+                        )
+                    })
+                    .filter(|(_, _, cells)| {
+                        needle.is_empty()
+                            || cells.iter().any(|c| c.to_lowercase().contains(&needle))
+                    })
+                    .collect();
+
+                if rows.is_empty() {
+                    ui.add_space(48.0);
+                    ui.vertical_centered(|ui| {
+                        icons::show(ui, Icon::Add, 24.0);
+                        ui.label(RichText::new("Nothing here yet").color(MUTED));
+                        ui.label(
+                            RichText::new("Use the New button to create one.")
+                                .small()
+                                .color(MUTED),
+                        );
+                    });
+                    return;
+                }
+
+                let clicked: Cell<Option<(usize, Value)>> = Cell::new(None);
+                let sel = self.maint_sel;
+                let mut table = TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .sense(egui::Sense::click())
+                    .cell_layout(Layout::left_to_right(Align::Center));
+                for _ in &headers {
+                    table = table.column(Column::remainder().at_least(90.0).clip(true));
+                }
+                table
+                    .header(24.0, |mut header| {
+                        for h in &headers {
+                            header.col(|ui| {
+                                ui.label(RichText::new(*h).strong());
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(28.0, rows.len(), |mut row| {
+                            let (idx, id, cells) = &rows[row.index()];
+                            row.set_selected(sel == Some(*idx));
+                            for cell in cells {
+                                row.col(|ui| {
+                                    ui.label(cell);
+                                });
+                            }
+                            if row.response().clicked() {
+                                clicked.set(Some((*idx, id.clone())));
+                            }
+                        });
+                    });
+
+                if let Some((i, id)) = clicked.take() {
+                    self.open_maint_by_id(i, id);
+                }
+            });
+    }
+
+    fn ui_maint_detail(&mut self, ctx: &egui::Context) {
+        let (icon, title) = match self.view {
+            View::Stations => (Icon::Station, "Station"),
+            View::Partners => (Icon::Partner, "Partner"),
+            View::Certificates => (Icon::Certificate, "Certificate"),
+            View::Mail => (Icon::Message, "Item"),
+        };
+        egui::SidePanel::right("maint_detail")
+            .resizable(true)
+            .default_width(420.0)
+            .frame(
+                egui::Frame::default()
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(14.0),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    icons::show(ui, icon, 20.0);
+                    ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Close").clicked() {
+                            self.maint_sel = None;
+                            self.maint_detail = None;
+                        }
+                    });
+                });
+                ui.separator();
+                match self.maint_detail.clone() {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Loading…");
+                        });
+                    }
+                    Some(v) => {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            egui::Grid::new("maint_detail_grid")
+                                .num_columns(2)
+                                .spacing([10.0, 6.0])
+                                .show(ui, |ui| {
+                                    if let Some(obj) = v.as_object() {
+                                        for (k, val) in obj {
+                                            if k == "raw" || val.is_null() {
+                                                continue;
+                                            }
+                                            ui.label(RichText::new(pretty_key(k)).color(MUTED));
+                                            ui.label(value_str(val));
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        });
+                    }
+                }
+            });
+    }
+
+    fn ui_create(&mut self, ctx: &egui::Context) {
+        let Some(kind) = self.forms.open else { return };
+        let title = match kind {
+            NewKind::Station => "New station",
+            NewKind::Partner => "New partner",
+            NewKind::Certificate => "New certificate (self-signed)",
+        };
+        let mut open = true;
+        let mut submit = false;
+        egui::Window::new(RichText::new(format!("  {title}")).strong())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                egui::Grid::new("create_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| match kind {
+                        NewKind::Station => {
+                            field(ui, "Name", &mut self.forms.st_name);
+                            field(ui, "AS2 ID", &mut self.forms.st_as2);
+                            field(ui, "Email", &mut self.forms.st_email);
+                        }
+                        NewKind::Partner => {
+                            station_combo(ui, &self.stations, &mut self.forms.pt_station);
+                            field(ui, "Name", &mut self.forms.pt_name);
+                            field(ui, "AS2 ID", &mut self.forms.pt_as2);
+                            field(ui, "Email", &mut self.forms.pt_email);
+                            field(ui, "Endpoint URL", &mut self.forms.pt_url);
+                        }
+                        NewKind::Certificate => {
+                            station_combo(ui, &self.stations, &mut self.forms.ct_station);
+                            field(ui, "Common name", &mut self.forms.ct_cn);
+                            field(ui, "Email", &mut self.forms.ct_email);
+                            field(ui, "Country", &mut self.forms.ct_country);
+                            field(ui, "Locality", &mut self.forms.ct_locality);
+                            field(ui, "Province", &mut self.forms.ct_province);
+                            field(ui, "Organization", &mut self.forms.ct_org);
+                            field(ui, "Org. unit", &mut self.forms.ct_orgunit);
+                            field(ui, "Days", &mut self.forms.ct_days);
+                            field(ui, "Key bits", &mut self.forms.ct_keybits);
+                            field(ui, "Hash", &mut self.forms.ct_hash);
+                        }
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let busy = self.forms.busy;
+                    let create = ui.add_enabled(
+                        !busy,
+                        egui::Button::image_and_text(
+                            icons::image(Icon::Add, 16.0),
+                            RichText::new("Create").strong(),
+                        )
+                        .fill(ACCENT),
+                    );
+                    if create.clicked() {
+                        submit = true;
+                    }
+                    if busy {
+                        ui.spinner();
+                    }
+                });
+            });
+        if submit {
+            self.submit_create();
+        }
+        if !open && !self.forms.busy {
+            self.forms.open = None;
+        }
+    }
+
+    fn current_maint_list(&self) -> &[Value] {
+        match self.view {
+            View::Partners => &self.partners,
+            View::Certificates => &self.certificates,
+            _ => &self.stations,
+        }
+    }
+
+    fn open_maint_by_id(&mut self, index: usize, id: Value) {
+        self.maint_sel = Some(index);
+        self.maint_detail = None;
+        if id.is_null() {
+            return;
+        }
+        let Some(c) = self.client.clone() else { return };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let view = self.view;
+        self.inflight += 1;
+        self.rt.spawn(async move {
+            let r = match view {
+                View::Partners => c.partners.get(id).await,
+                View::Certificates => c.certificates.get(id).await,
+                _ => c.stations.get(id).await,
+            };
+            let _ = tx.send(Event::MaintDetail(r));
+            ctx.request_repaint();
+        });
     }
 
     fn ui_toolbar(&mut self, ctx: &egui::Context) {
@@ -1371,6 +1955,124 @@ fn label_with_icon(ui: &mut egui::Ui, icon: Icon, text: &str) {
         icons::show(ui, icon, 16.0);
         ui.label(RichText::new(text).color(MUTED));
     });
+}
+
+/// A nav-rail item: stacked icon over label, highlighted when active.
+fn nav_item(ui: &mut egui::Ui, icon: Icon, label: &str, active: bool) -> bool {
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), egui::Sense::click());
+    if active {
+        ui.painter()
+            .rect_filled(rect, 6.0, Color32::from_rgb(0x2C, 0x3E, 0x50));
+        ui.painter().rect_filled(
+            Rect::from_min_size(rect.left_top(), Vec2::new(3.0, rect.height())),
+            0.0,
+            Color32::from_rgb(0x4D, 0xA3, 0xF0),
+        );
+    } else if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 6.0, Color32::from_rgb(0x27, 0x35, 0x45));
+    }
+    let icon_rect = Rect::from_min_size(
+        egui::pos2(rect.center().x - 9.0, rect.top() + 8.0),
+        Vec2::splat(18.0),
+    );
+    icons::image(icon, 18.0).paint_at(ui, icon_rect);
+    let color = if active {
+        Color32::WHITE
+    } else {
+        Color32::from_rgb(0xB9, 0xC3, 0xCE)
+    };
+    ui.painter().text(
+        egui::pos2(rect.center().x, rect.bottom() - 8.0),
+        Align2::CENTER_BOTTOM,
+        label,
+        FontId::proportional(10.0),
+        color,
+    );
+    resp.clicked()
+}
+
+/// Column headers for a maintenance module.
+fn maint_headers(view: View) -> Vec<&'static str> {
+    match view {
+        View::Partners => vec!["Name", "AS2 ID", "Email", "Station"],
+        View::Certificates => vec!["Common name", "Email", "Station", "Valid until"],
+        _ => vec!["Name", "AS2 ID"],
+    }
+}
+
+/// Cell values for one row of a maintenance module.
+fn maint_cells(view: View, v: &Value) -> Vec<String> {
+    match view {
+        View::Partners => vec![
+            sfield(v, &["name", "nombre"]),
+            sfield(v, &["as2_id", "as2id"]),
+            sfield(v, &["email"]),
+            sfield(v, &["station_name", "estacion"]),
+        ],
+        View::Certificates => vec![
+            sfield(v, &["commonName", "commonname"]),
+            sfield(v, &["email"]),
+            sfield(v, &["station_name", "estacion"]),
+            short_date(&sfield(v, &["validityEnd", "validityend"])),
+        ],
+        _ => vec![
+            sfield(v, &["name", "nombre"]),
+            sfield(v, &["as2_id", "as2id"]),
+        ],
+    }
+}
+
+/// A labelled single-line text field row inside a form Grid.
+fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.label(RichText::new(label).color(MUTED));
+    ui.add(egui::TextEdit::singleline(value).desired_width(300.0));
+    ui.end_row();
+}
+
+/// A station picker row inside a form Grid, storing the selected index.
+fn station_combo(ui: &mut egui::Ui, stations: &[Value], selected: &mut usize) {
+    ui.label(RichText::new("Station").color(MUTED));
+    let current = stations
+        .get(*selected)
+        .map(|s| sfield(s, &["name", "nombre"]))
+        .unwrap_or_else(|| "— pick a station —".into());
+    egui::ComboBox::from_id_salt("form_station")
+        .selected_text(current)
+        .width(300.0)
+        .show_ui(ui, |ui| {
+            for (i, s) in stations.iter().enumerate() {
+                ui.selectable_value(selected, i, sfield(s, &["name", "nombre"]));
+            }
+        });
+    ui.end_row();
+}
+
+/// Humanize a JSON key for the detail view (snake/alias → Title Case).
+fn pretty_key(k: &str) -> String {
+    let mut out = String::new();
+    for (i, part) in k.split('_').enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let mut chars = part.chars();
+        if let Some(f) = chars.next() {
+            out.extend(f.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out
+}
+
+/// Render a JSON scalar for the detail view.
+fn value_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => (if *b { "yes" } else { "no" }).to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 // --- helpers -----------------------------------------------------------------
