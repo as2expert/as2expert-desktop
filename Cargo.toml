@@ -23,7 +23,7 @@ eframe = { version = "0.29", default-features = false, features = [
     "wayland",
     "x11",
 ] }
-# Image loaders so the app can render the bundled Axialis PNG icons.
+# Image loaders so the app can render the bundled Silk PNG icons.
 egui_extras = { version = "0.29", default-features = false, features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Native save/open dialogs (Windows/macOS native; GTK on Linux).
