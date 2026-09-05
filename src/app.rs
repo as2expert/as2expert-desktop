@@ -288,8 +288,13 @@ impl App {
     fn load_partners(&mut self) {
         let Some(c) = self.client.clone() else { return };
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        // Partners are always scoped to the active station.
+        let mut body = json!({});
+        if let Some(sid) = self.selected_station {
+            body["station"] = json!(sid);
+        }
         self.rt.spawn(async move {
-            let r = c.partners.list(json!({})).await;
+            let r = c.partners.list(body).await;
             let _ = tx.send(Event::Partners(r));
             ctx.request_repaint();
         });
@@ -316,7 +321,7 @@ impl App {
         self.maint_detail = None;
         match view {
             View::Stations if self.stations.is_empty() => self.load_stations(),
-            View::Partners if self.partners.is_empty() => self.load_partners(),
+            View::Partners => self.load_partners(),
             View::Certificates => self.load_certificates(),
             _ => {}
         }
@@ -767,6 +772,15 @@ impl App {
                     match r {
                         Ok(v) => {
                             self.stations = v;
+                            // Messages and partners are always scoped to a station:
+                            // default to the first one if none is active yet.
+                            if self.selected_station.is_none() {
+                                self.selected_station = self
+                                    .stations
+                                    .first()
+                                    .and_then(|s| s.get("id"))
+                                    .and_then(|v| v.as_i64());
+                            }
                             if self.screen == Screen::Login {
                                 self.screen = Screen::Main;
                                 let _ = self.config.save();
@@ -1161,10 +1175,24 @@ impl App {
                             self.load_stations();
                         }
                         self.forms = Forms::default();
+                        // New partners/certificates default to the active station.
+                        if let Some(idx) = self.active_station_index() {
+                            self.forms.pt_station = idx;
+                            self.forms.ct_station = idx;
+                        }
                         self.forms.open = Some(new_kind);
                     }
                     if icons::labeled_button(ui, Icon::Refresh, 16.0, "Refresh").clicked() {
                         self.refresh_view();
+                    }
+                    // Partners are always scoped to a station.
+                    if self.view == View::Partners {
+                        ui.separator();
+                        if station_picker(ui, &self.stations, &mut self.selected_station) {
+                            self.maint_sel = None;
+                            self.maint_detail = None;
+                            self.load_partners();
+                        }
                     }
                     ui.separator();
                     icons::show(ui, Icon::Search, 16.0);
@@ -1440,6 +1468,14 @@ impl App {
         }
     }
 
+    /// Index of the active station within `self.stations`, if any.
+    fn active_station_index(&self) -> Option<usize> {
+        let sid = self.selected_station?;
+        self.stations
+            .iter()
+            .position(|s| s.get("id").and_then(|v| v.as_i64()) == Some(sid))
+    }
+
     fn current_maint_list(&self) -> &[Value] {
         match self.view {
             View::Partners => &self.partners,
@@ -1490,41 +1526,8 @@ impl App {
                     }
                     ui.separator();
 
-                    // Station picker (like the web toolbar combo).
-                    icons::show(ui, Icon::Station, 16.0);
-                    let current = self
-                        .selected_station
-                        .and_then(|sid| {
-                            self.stations
-                                .iter()
-                                .find(|s| s.get("id").and_then(|v| v.as_i64()) == Some(sid))
-                        })
-                        .map(|s| sfield(s, &["name", "nombre"]))
-                        .unwrap_or_else(|| "All stations".into());
-                    let mut change: Option<Option<i64>> = None;
-                    egui::ComboBox::from_id_salt("station")
-                        .selected_text(current)
-                        .width(240.0)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(self.selected_station.is_none(), "All stations")
-                                .clicked()
-                            {
-                                change = Some(None);
-                            }
-                            for s in &self.stations {
-                                let id = s.get("id").and_then(|v| v.as_i64());
-                                let name = sfield(s, &["name", "nombre"]);
-                                if ui
-                                    .selectable_label(self.selected_station == id, name)
-                                    .clicked()
-                                {
-                                    change = Some(id);
-                                }
-                            }
-                        });
-                    if let Some(sel) = change {
-                        self.selected_station = sel;
+                    // Station picker — messages are always scoped to a station.
+                    if station_picker(ui, &self.stations, &mut self.selected_station) {
                         self.selected_folder = None;
                         self.load_folders();
                         self.refresh_messages();
@@ -2130,7 +2133,7 @@ fn nav_item(ui: &mut egui::Ui, icon: Icon, label: &str, active: bool) -> bool {
 /// Column headers for a maintenance module.
 fn maint_headers(view: View) -> Vec<&'static str> {
     match view {
-        View::Partners => vec!["Name", "AS2 ID", "Email", "Station"],
+        View::Partners => vec!["Name", "AS2 ID", "Email", "URL"],
         View::Certificates => vec!["Common name", "Email", "Station", "Valid until"],
         _ => vec!["Name", "AS2 ID"],
     }
@@ -2143,7 +2146,7 @@ fn maint_cells(view: View, v: &Value) -> Vec<String> {
             sfield(v, &["name", "nombre"]),
             sfield(v, &["as2_id", "as2id"]),
             sfield(v, &["email"]),
-            sfield(v, &["station_name", "estacion"]),
+            sfield(v, &["url"]),
         ],
         View::Certificates => vec![
             sfield(v, &["commonName", "commonname"]),
@@ -2163,6 +2166,45 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.label(RichText::new(label).color(MUTED));
     ui.add(egui::TextEdit::singleline(value).desired_width(300.0));
     ui.end_row();
+}
+
+/// A toolbar station picker (real stations only, no "all"). Returns true when
+/// the selection changed. Messages and partners are always scoped to a station.
+fn station_picker(ui: &mut egui::Ui, stations: &[Value], selected: &mut Option<i64>) -> bool {
+    icons::show(ui, Icon::Station, 16.0);
+    let current = selected
+        .and_then(|sid| {
+            stations
+                .iter()
+                .find(|s| s.get("id").and_then(|v| v.as_i64()) == Some(sid))
+        })
+        .map(|s| sfield(s, &["name", "nombre"]))
+        .unwrap_or_else(|| "— select a station —".into());
+    let mut changed = None;
+    egui::ComboBox::from_id_salt("station_picker")
+        .selected_text(current)
+        .width(240.0)
+        .show_ui(ui, |ui| {
+            for s in stations {
+                let id = s.get("id").and_then(|v| v.as_i64());
+                if id.is_none() {
+                    continue;
+                }
+                if ui
+                    .selectable_label(*selected == id, sfield(s, &["name", "nombre"]))
+                    .clicked()
+                {
+                    changed = id;
+                }
+            }
+        });
+    if let Some(id) = changed {
+        if *selected != Some(id) {
+            *selected = Some(id);
+            return true;
+        }
+    }
+    false
 }
 
 /// A station picker row inside a form Grid, storing the selected index.

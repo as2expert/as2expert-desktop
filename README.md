@@ -14,8 +14,10 @@ stack**. Every API call goes through the official
   tree** on the left, a sortable **message grid** in the centre, and a **reading
   pane** on the right — with Silk icons and a refined light theme.
 - Connect to `free`, `b2b`, or any self-hosted AS2Expert deployment.
-- Pick a station and browse its **real folder tree** (loaded from the API, with
-  hierarchy and per-folder counts); the grid follows the selected folder.
+- **Messages and partners are always scoped to a station** — pick the active
+  station in the toolbar; there is no cross-station aggregate view.
+- Browse the station's **real folder tree** (loaded from the API, with hierarchy
+  and per-folder counts); the grid follows the selected folder.
 - Sort by subject/partner/date/MDN and search by subject or partner;
   incoming/outgoing and MDN status at a glance.
 - Read a message: metadata (partner, AS2 id, MDN, signature, encryption) and

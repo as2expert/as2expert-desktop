@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "as2expert-desktop"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "as2expert",
  "eframe",
