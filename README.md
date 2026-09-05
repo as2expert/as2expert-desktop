@@ -12,7 +12,7 @@ stack**. Every API call goes through the official
 
 - A web-portal-style layout: a **station picker** in the toolbar, a **folder
   tree** on the left, a sortable **message grid** in the centre, and a **reading
-  pane** on the right — with Axialis icons and a refined light theme.
+  pane** on the right — with Silk icons and a refined light theme.
 - Connect to `free`, `b2b`, or any self-hosted AS2Expert deployment.
 - Pick a station and browse its **real folder tree** (loaded from the API, with
   hierarchy and per-folder counts); the grid follows the selected folder.
@@ -97,9 +97,10 @@ file or a typed path.
 
 ## Icons
 
-Toolbar and list icons are from the **Axialis** icon set, bundled under
-`assets/icons/`. The application code is Apache-2.0; the icons remain under their
-respective Axialis license.
+Toolbar and list icons are from the **Silk** icon set by Mark James
+(famfamfam.com), licensed under [Creative Commons Attribution 2.5](https://creativecommons.org/licenses/by/2.5/)
+and bundled under `assets/icons/` (see `assets/icons/NOTICE`). The application
+code is Apache-2.0.
 
 ## License
 

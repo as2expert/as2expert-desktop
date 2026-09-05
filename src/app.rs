@@ -635,7 +635,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.add_space(56.0);
                 ui.vertical_centered(|ui| {
-                    icons::show(ui, Icon::Logo, 56.0);
+                    icons::show(ui, Icon::Logo, 32.0);
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new("AS2Expert Desktop")
@@ -940,7 +940,7 @@ impl App {
                 if visible.is_empty() {
                     ui.add_space(48.0);
                     ui.vertical_centered(|ui| {
-                        icons::show(ui, Icon::Inbox, 40.0);
+                        icons::show(ui, Icon::Inbox, 24.0);
                         ui.label(RichText::new("No messages").color(MUTED));
                         ui.label(
                             RichText::new("Pick a station, a folder, or press Receive.")
@@ -1027,7 +1027,7 @@ impl App {
                             row.set_selected(self.selected == Some(i));
                             let incoming = bool_dir(m);
                             row.col(|ui| {
-                                icons::show(ui, if incoming { Icon::In } else { Icon::Out }, 20.0);
+                                icons::show(ui, if incoming { Icon::In } else { Icon::Out }, 16.0);
                             });
                             row.col(|ui| {
                                 ui.label(sfield(m, &["subject", "asunto"]));
@@ -1087,7 +1087,7 @@ impl App {
 
                 let incoming = bool_dir(&m);
                 ui.horizontal(|ui| {
-                    icons::show(ui, if incoming { Icon::In } else { Icon::Out }, 26.0);
+                    icons::show(ui, if incoming { Icon::In } else { Icon::Out }, 18.0);
                     ui.label(
                         RichText::new(sfield(&m, &["subject", "asunto"]))
                             .size(16.0)

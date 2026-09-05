@@ -1,5 +1,5 @@
-//! Bundled Axialis icons, embedded at compile time and rendered through egui's
-//! image loaders. Each icon is a 32×32 (or 48×48 for the logo) RGBA PNG.
+//! Bundled Silk icons (famfamfam, CC BY 2.5), embedded at compile time and
+//! rendered through egui's image loaders. Each icon is a 16×16 RGBA PNG.
 
 use eframe::egui::{self, ImageSource};
 
